@@ -41,11 +41,12 @@ interface AuthenticatedRequest extends Request {
 }
 
 function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  const isProd = process.env.NODE_ENV === 'production';
   const token = req.headers['x-session-token'] as string;
   if (!token) {
     // In dev / demo mode, fallback to superadmin if no token passed
     const defaultSuperadmin = db.getVoterByRA('1001');
-    if (defaultSuperadmin) {
+    if (!isProd && defaultSuperadmin) {
       req.voter = defaultSuperadmin;
       req.sessionToken = 'demo-superadmin-token';
       return next();
@@ -56,7 +57,7 @@ function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunctio
   const session = db.getSession(token);
   if (!session) {
     const fallbackVoter = db.getVoterByRA('1001');
-    if (fallbackVoter) {
+    if (!isProd && fallbackVoter) {
       req.voter = fallbackVoter;
       req.sessionToken = token;
       return next();

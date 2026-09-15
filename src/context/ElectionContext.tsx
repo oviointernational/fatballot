@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { Office, CandidateProfile, SiteSettings, CastVote, OfficeLiveResult, SystemStats } from '../types';
 import { useAuth } from './AuthContext';
+import { WS_ORIGIN } from '../lib/config';
 
 interface ElectionContextType {
   settings: SiteSettings;
@@ -91,7 +92,9 @@ export const ElectionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   // Real-time WebSocket connection
   useEffect(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    const wsUrl = WS_ORIGIN
+      ? `${WS_ORIGIN}/ws`
+      : `${protocol}//${window.location.host}/ws`;
     let ws: WebSocket | null = null;
     let reconnectTimeout: any = null;
 

@@ -14,6 +14,7 @@ import {
   Lock
 } from "lucide-react";
 import { OfficeLiveResult, SystemStats, TimelineItem } from "../types";
+import { WS_ORIGIN } from "../lib/config";
 
 interface ObserverPortalProps {
   token: string;
@@ -79,8 +80,12 @@ export const ObserverPortal: React.FC<ObserverPortalProps> = ({ token }) => {
   useEffect(() => {
     if (verified) {
       fetchData();
-      // WebSocket for live results
-      const ws = new WebSocket(`ws://${window.location.hostname}:5000`);
+// WebSocket for live results
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = WS_ORIGIN
+        ? `${WS_ORIGIN}/ws`
+        : `${protocol}//${window.location.host}/ws`;
+      const ws = new WebSocket(wsUrl);
       ws.onmessage = (msg) => {
         try {
           const data = JSON.parse(msg.data);
