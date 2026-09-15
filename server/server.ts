@@ -1,12 +1,16 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import http from 'http';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { db } from './database';
 import { auditLedger, AuditActor } from './auditLedger';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const FRONTEND_DIR = path.join(__dirname, '..', 'dist');
 
 // Firebase web API key used to verify passwordless sign-in ID tokens server-side
 const FIREBASE_API_KEY = 'AIzaSyDBzRlGJfUZXU86t5xMg1Q18rdjBbXzsEA';
@@ -962,6 +966,17 @@ app.post('/api/audit-log/export-event', optionalAuth, (req: AuthenticatedRequest
   });
 
   res.json({ success: true });
+});
+
+// ----------------------------------------------------
+// PRODUCTION: Serve the built React frontend
+// ----------------------------------------------------
+// Static assets (JS/CSS/images) from the Vite build
+app.use(express.static(FRONTEND_DIR));
+
+// SPA fallback: any non-API GET route (e.g. /login for the Firebase email link) serves index.html
+app.get(/^\/(?!api|ws).*/, (_req: Request, res: Response) => {
+  res.sendFile(path.join(FRONTEND_DIR, 'index.html'));
 });
 
 server.listen(PORT, () => {
