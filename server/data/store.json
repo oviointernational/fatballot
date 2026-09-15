@@ -1,0 +1,710 @@
+{
+  "settings": {
+    "siteName": "FatBallot",
+    "aboutTitle": "Official 2026 Youth & Community Executive Elections",
+    "aboutContent": "Welcome to the official digital voting platform for the 2026 General Elections. FatBallot is engineered to guarantee sovereign transparency, immutable election integrity, and seamless accessibility for all accredited voters. Every vote cast, accreditation processed, and ballot modification is cryptographically signed and permanently logged in our zero-tampering audit ledger. Please ensure your accreditation is active before proceeding to the ballot chamber.",
+    "aboutImageUrl": "https://images.unsplash.com/photo-1540910419892-4a36d2c3266c?auto=format&fit=crop&w=1200&q=80",
+    "electionStartTime": "2026-09-12T14:18:41.140Z",
+    "electionEndTime": "2026-09-15T15:18:41.142Z",
+    "contestantsCanViewVoters": true,
+    "publicAuditLog": false,
+    "permissions": {
+      "canRegisterUsers": [
+        "superadmin",
+        "committee"
+      ],
+      "canAccreditUsers": [
+        "superadmin",
+        "committee"
+      ],
+      "canCreateOffices": [
+        "superadmin",
+        "committee"
+      ],
+      "canAssignOffices": [
+        "superadmin",
+        "committee"
+      ],
+      "canCreateScreeningCriteria": [
+        "superadmin",
+        "committee"
+      ],
+      "canAssignAgents": [
+        "superadmin",
+        "committee"
+      ],
+      "canCreateObservers": [
+        "superadmin"
+      ]
+    }
+  },
+  "offices": [
+    {
+      "id": "off-pres",
+      "title": "Executive President",
+      "order": 1,
+      "description": "Chief Executive Officer presiding over executive meetings and steering council mandates.",
+      "icon": "Crown"
+    },
+    {
+      "id": "off-vp",
+      "title": "Vice President",
+      "order": 2,
+      "description": "Principal assistant to the President, supervising committees and policy execution.",
+      "icon": "Shield"
+    },
+    {
+      "id": "off-sec",
+      "title": "General Secretary",
+      "order": 3,
+      "description": "Custodian of council secretariat, minutes, correspondence, and institutional records.",
+      "icon": "FileText"
+    },
+    {
+      "id": "off-tres",
+      "title": "Treasurer & Financial Secretary",
+      "order": 4,
+      "description": "Manager of budgetary allocations, audits, funds custody, and financial disclosures.",
+      "icon": "Coins"
+    },
+    {
+      "id": "off-soc",
+      "title": "Director of Socials & Welfare",
+      "order": 5,
+      "description": "Overseeing student wellbeing, community engagements, cultural forums, and welfare.",
+      "icon": "Sparkles"
+    },
+    {
+      "id": "off-pro",
+      "title": "Public Relations Officer (PRO)",
+      "order": 6,
+      "description": "Primary spokesperson managing institutional communications and public bulletins.",
+      "icon": "Megaphone"
+    }
+  ],
+  "candidates": [
+    {
+      "id": "cand-1",
+      "officeId": "off-pres",
+      "name": "Dr. Adebayo Babatunde Tunde",
+      "raNumber": "2001",
+      "avatar": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=400&q=80",
+      "tagline": "Empowering youth leadership through transparent digital innovation.",
+      "vision": "To cultivate a progressive council that elevates youth mentorship, modernizes student welfare infrastructure, and institutes real-time accountability across all committee portfolios.",
+      "antecedent": [
+        "Former Chairman of Youth Advisory Taskforce (2024-2025)",
+        "Recipient of National Civic Leadership Award (2024)",
+        "Co-founder of Clean Campus Green Initiative"
+      ],
+      "currentOffices": [
+        "Head of Electoral Ethics Working Group",
+        "Senior Member, Council on Digital Governance"
+      ],
+      "achievements": [
+        "Spearheaded the 2024 Student Relief Emergency Fund raising over $45,000",
+        "Published two peer-reviewed policy briefs on institutional voting trust"
+      ],
+      "contactEmail": "adebayo.tunde@fatballot.org"
+    },
+    {
+      "id": "cand-2",
+      "officeId": "off-pres",
+      "name": "Barr. Chioma Grace Okeke",
+      "raNumber": "2002",
+      "avatar": "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=400&q=80",
+      "tagline": "Justice, Equity, and Sustainable Community Development.",
+      "vision": "Fostering inclusive governance where every registered voter has a direct voice in council policy, with zero tolerance for institutional complacency or administrative opacity.",
+      "antecedent": [
+        "Director of Legal Affairs, Student Union Council (2024)",
+        "Lead Counsel in the 2023 Fair Housing Coalition"
+      ],
+      "currentOffices": [
+        "Council Legal Consultant",
+        "Liaison Officer to National Academic Body"
+      ],
+      "achievements": [
+        "Drafted the Historic 2024 Student Bill of Rights",
+        "Orchestrated 100% legal aid access for indigent students"
+      ],
+      "contactEmail": "chioma.okeke@fatballot.org"
+    },
+    {
+      "id": "cand-3",
+      "officeId": "off-vp",
+      "name": "Farouk Al-Hassan",
+      "raNumber": "2003",
+      "avatar": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=400&q=80",
+      "tagline": "Bridging the gap between students and administrative leadership.",
+      "vision": "To streamline committee coordination, accelerate council resolutions, and guarantee high impact social interventions for every member of our constituency.",
+      "antecedent": [
+        "Deputy Director of Academic Research (2024)",
+        "Organizer of Annual Inter-Faculty Science Olympiad"
+      ],
+      "currentOffices": [
+        "Secretary of Academic Council Review"
+      ],
+      "achievements": [
+        "Secured 15 corporate internship partnerships for graduating fellows"
+      ],
+      "contactEmail": "farouk.alhassan@fatballot.org"
+    },
+    {
+      "id": "cand-4",
+      "officeId": "off-vp",
+      "name": "Omolara Folake Davies",
+      "raNumber": "2004",
+      "avatar": "https://images.unsplash.com/photo-1580489944761-15a19d654956?auto=format&fit=crop&w=400&q=80",
+      "tagline": "Action-driven leadership, collaborative impact.",
+      "vision": "Transforming the Vice Presidential office into a dynamic engine of student entrepreneurship, mental health advocacy, and community outreach.",
+      "antecedent": [
+        "Welfare Representative, North Hall (2024)",
+        "Head Volunteer, Community Health Outreach (2023-2024)"
+      ],
+      "currentOffices": [
+        "Campus Mental Health Ambassador"
+      ],
+      "achievements": [
+        "Established the 24/7 Peer Counseling Hotline serving 1,200+ students"
+      ],
+      "contactEmail": "omolara.davies@fatballot.org"
+    },
+    {
+      "id": "cand-5",
+      "officeId": "off-sec",
+      "name": "Kofi Mensah Boateng",
+      "raNumber": "2005",
+      "avatar": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=400&q=80",
+      "tagline": "Precision, Punctuality, and Flawless Documentation.",
+      "vision": "Digitizing 100% of council archives, implementing open public access to meeting communiques within 24 hours, and setting gold standards for secretarial diligence.",
+      "antecedent": [
+        "Assistant General Secretary (2024-2025)",
+        "Editor-in-Chief, Gazette of Student Affairs"
+      ],
+      "currentOffices": [
+        "Director of Secretariat Digitalization"
+      ],
+      "achievements": [
+        "Modernized 10 years of archived council resolutions into searchable open access repository"
+      ],
+      "contactEmail": "kofi.mensah@fatballot.org"
+    },
+    {
+      "id": "cand-6",
+      "officeId": "off-tres",
+      "name": "Zainab Aminu Bello",
+      "raNumber": "2006",
+      "avatar": "https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=400&q=80",
+      "tagline": "Fiscal Integrity and Transparent Treasury Management.",
+      "vision": "Publishing monthly itemized treasury dashboards, minimizing bureaucratic budget delays, and optimizing funds to maximize welfare benefits.",
+      "antecedent": [
+        "Audit Committee Lead (2024)",
+        "Student Financial Analyst, Investment Society"
+      ],
+      "currentOffices": [
+        "Treasurer, Society of Economics and Finance"
+      ],
+      "achievements": [
+        "Identified and eliminated $12,000 in redundant operational expenses during 2024 audit"
+      ],
+      "contactEmail": "zainab.bello@fatballot.org"
+    },
+    {
+      "id": "cand-7",
+      "officeId": "off-tres",
+      "name": "Emeka Chibuike Eze",
+      "raNumber": "2007",
+      "avatar": "https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?auto=format&fit=crop&w=400&q=80",
+      "tagline": "Smart budgeting for transformative student development.",
+      "vision": "To leverage digital accounting principles to ensure zero budget leakage, real-time expenditure tracking, and funded micro-grants for student initiatives.",
+      "antecedent": [
+        "Financial Controller, Engineering Students Union (2024)",
+        "Junior Auditor at KPMG University Internship"
+      ],
+      "currentOffices": [
+        "President, Finance Innovation Club"
+      ],
+      "achievements": [
+        "Built the first automated student club dues remittance portal"
+      ],
+      "contactEmail": "emeka.eze@fatballot.org"
+    },
+    {
+      "id": "cand-8",
+      "officeId": "off-soc",
+      "name": "Stephanie Amara Okon",
+      "raNumber": "2008",
+      "avatar": "https://images.unsplash.com/photo-1517841905240-472988babdf9?auto=format&fit=crop&w=400&q=80",
+      "tagline": "Vibrant community, rich culture, unparalleled welfare.",
+      "vision": "Reinvigorating campus life through vibrant cultural festivals, career mixers, and comprehensive health insurance advocacy.",
+      "antecedent": [
+        "Cultural Festival Director (2024)",
+        "Student Welfare Liaison Officer"
+      ],
+      "currentOffices": [
+        "Chief Coordinator of Annual Gala"
+      ],
+      "achievements": [
+        "Organized the largest attended Youth Cultural Festival with 4,500 participants"
+      ],
+      "contactEmail": "stephanie.okon@fatballot.org"
+    },
+    {
+      "id": "cand-9",
+      "officeId": "off-soc",
+      "name": "Tariq Danladi",
+      "raNumber": "2009",
+      "avatar": "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?auto=format&fit=crop&w=400&q=80",
+      "tagline": "Welfare for all, inclusivity without exception.",
+      "vision": "Ensuring no student falls through the cracks by instituting emergency nutrition grants, accessible dormitories, and sports tournaments.",
+      "antecedent": [
+        "Sports Committee Captain (2024)",
+        "Disability Access Taskforce Member"
+      ],
+      "currentOffices": [
+        "Welfare Officer, Faculty of Sciences"
+      ],
+      "achievements": [
+        "Renovated 3 common recreational lounges and secured wheelchair ramps"
+      ],
+      "contactEmail": "tariq.danladi@fatballot.org"
+    },
+    {
+      "id": "cand-10",
+      "officeId": "off-pro",
+      "name": "Blessing Ifunanya Uche",
+      "raNumber": "2010",
+      "avatar": "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?auto=format&fit=crop&w=400&q=80",
+      "tagline": "Amplifying every voice with clarity and truth.",
+      "vision": "Transforming the council's communication matrix into an interactive multi-channel hub with weekly podcast briefings, press conferences, and SMS alerts.",
+      "antecedent": [
+        "Editor-in-Chief of Campus Radio Station (2024)",
+        "Digital Media Manager, Model UN Society"
+      ],
+      "currentOffices": [
+        "Director of Media Communications"
+      ],
+      "achievements": [
+        "Grew official university news portal audience by 300% within one academic semester"
+      ],
+      "contactEmail": "blessing.uche@fatballot.org"
+    }
+  ],
+  "voters": [
+    {
+      "id": "vot-1",
+      "raNumber": "1001",
+      "email": "superadmin@fatballot.org",
+      "firstName": "Electoral",
+      "middleName": "Chief",
+      "lastName": "SuperAdmin",
+      "role": "superadmin",
+      "isAccredited": false,
+      "department": "Electoral Commission Directorate",
+      "phone": "+234 801 000 1001",
+      "registeredAt": "2026-08-01T08:00:00.000Z"
+    },
+    {
+      "id": "vot-2",
+      "raNumber": "1002",
+      "email": "committee@fatballot.org",
+      "firstName": "Hauwa",
+      "middleName": "Bilkisu",
+      "lastName": "Yusuf",
+      "role": "committee",
+      "isAccredited": true,
+      "department": "Youth Electoral Committee Secretariat",
+      "phone": "+234 801 000 1002",
+      "registeredAt": "2026-08-02T09:15:00.000Z"
+    },
+    {
+      "id": "vot-3",
+      "raNumber": "2001",
+      "email": "adebayo.tunde@fatballot.org",
+      "firstName": "Adebayo",
+      "middleName": "Babatunde",
+      "lastName": "Tunde",
+      "role": "contestant",
+      "isAccredited": true,
+      "department": "Political Science & Public Administration",
+      "phone": "+234 802 000 2001",
+      "registeredAt": "2026-08-05T10:00:00.000Z",
+      "isAgent": true,
+      "agentOfficeId": "off-vp",
+      "agentCandidateId": "cand-3"
+    },
+    {
+      "id": "vot-4",
+      "raNumber": "2002",
+      "email": "chioma.okeke@fatballot.org",
+      "firstName": "Chioma",
+      "middleName": "Grace",
+      "lastName": "Okeke",
+      "role": "committee",
+      "isAccredited": true,
+      "department": "Faculty of Law",
+      "phone": "+234 802 000 2002",
+      "registeredAt": "2026-08-05T11:30:00.000Z"
+    },
+    {
+      "id": "vot-5",
+      "raNumber": "3001",
+      "email": "emeka.nwosu@fatballot.org",
+      "firstName": "Emeka",
+      "middleName": "Valentine",
+      "lastName": "Nwosu",
+      "role": "voter",
+      "isAccredited": true,
+      "department": "Computer Science & Artificial Intelligence",
+      "phone": "+234 803 000 3001",
+      "registeredAt": "2026-08-10T14:20:00.000Z",
+      "isAgent": false
+    },
+    {
+      "id": "vot-6",
+      "raNumber": "3002",
+      "email": "fatima.bello@fatballot.org",
+      "firstName": "Fatima",
+      "middleName": "Zahra",
+      "lastName": "Bello",
+      "role": "voter",
+      "isAccredited": true,
+      "department": "Civil & Environmental Engineering",
+      "phone": "+234 803 000 3002",
+      "registeredAt": "2026-08-11T12:00:00.000Z",
+      "isAgent": true,
+      "agentOfficeId": "off-pres",
+      "agentCandidateId": "cand-2"
+    },
+    {
+      "id": "vot-7",
+      "raNumber": "3003",
+      "email": "olumide.adeyemi@fatballot.org",
+      "firstName": "Olumide",
+      "middleName": "Samuel",
+      "lastName": "Adeyemi",
+      "role": "voter",
+      "isAccredited": false,
+      "department": "Biomedical Sciences",
+      "phone": "+234 803 000 3003",
+      "registeredAt": "2026-08-12T16:45:00.000Z"
+    },
+    {
+      "id": "vot-8",
+      "raNumber": "3004",
+      "email": "amara.kalu@fatballot.org",
+      "firstName": "Amara",
+      "middleName": "Chisom",
+      "lastName": "Kalu",
+      "role": "voter",
+      "isAccredited": true,
+      "department": "Economics & Finance",
+      "phone": "+234 803 000 3004",
+      "registeredAt": "2026-08-14T09:10:00.000Z"
+    }
+  ],
+  "timeline": [
+    {
+      "id": "time-1",
+      "order": 1,
+      "title": "Voter Registration & Database Publication",
+      "description": "Publishing of eligible electorate voter lists, RA assignments, and institutional directory cross-matching.",
+      "date": "Aug 01 - Aug 20, 2026",
+      "status": "completed",
+      "icon": "UserCheck"
+    },
+    {
+      "id": "time-2",
+      "order": 2,
+      "title": "Nomination & Candidate Screening",
+      "description": "Submission of candidacy nomination forms, vetting of constitutional eligibility, and publication of contestant profiles.",
+      "date": "Aug 21 - Aug 28, 2026",
+      "status": "completed",
+      "icon": "FileCheck"
+    },
+    {
+      "id": "time-3",
+      "order": 3,
+      "title": "Presidential & Executive Manifesto Debate",
+      "description": "Broadcasted public debate sessions and manifesto presentations streamed live across constituent forums.",
+      "date": "Sep 01 - Sep 05, 2026",
+      "status": "completed",
+      "icon": "Radio"
+    },
+    {
+      "id": "time-4",
+      "order": 4,
+      "title": "Voter Accreditation & Security Verification",
+      "description": "Issuance of secure biometric/digital RA authentication tokens and single-device credential validation.",
+      "date": "Sep 06 - Sep 11, 2026",
+      "status": "active",
+      "icon": "BadgeCheck"
+    },
+    {
+      "id": "time-5",
+      "order": 5,
+      "title": "FatBallot Live Election & E-Ballot Portal",
+      "description": "Electronic ballot portal opens for accredited voters. Real-time encrypted vote casting with instant change capability.",
+      "date": "Sep 12 - Sep 15, 2026",
+      "status": "active",
+      "icon": "Vote"
+    },
+    {
+      "id": "time-6",
+      "order": 6,
+      "title": "Official Collation, Audit & Declaration of Results",
+      "description": "Cryptographic validation of SHA-256 audit ledger, official return certifications, and swearing-in ceremony.",
+      "date": "Sep 16, 2026",
+      "status": "upcoming",
+      "icon": "Award"
+    }
+  ],
+  "ycec": [
+    {
+      "id": "ycec-1",
+      "name": "Engr. Nnamdi Paul Azikiwe",
+      "role": "Chief Electoral Commissioner & Chairman",
+      "email": "chairman.ycec@fatballot.org",
+      "phone": "+234 803 111 2221",
+      "avatar": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=400&q=80",
+      "tenure": "2025 - 2027"
+    },
+    {
+      "id": "ycec-2",
+      "name": "Prof. Aisha Mohammed Danjuma",
+      "role": "Secretary to the Electoral Commission",
+      "email": "secretary.ycec@fatballot.org",
+      "phone": "+234 803 111 2222",
+      "avatar": "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=400&q=80",
+      "tenure": "2025 - 2027"
+    },
+    {
+      "id": "ycec-3",
+      "name": "Barr. Femi Kayode Alabi",
+      "role": "Chief Legal & Constitutional Advisory Counsel",
+      "email": "legal.ycec@fatballot.org",
+      "phone": "+234 803 111 2223",
+      "avatar": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=400&q=80",
+      "tenure": "2025 - 2027"
+    },
+    {
+      "id": "ycec-4",
+      "name": "Dr. Maryam Chinedu Sanni",
+      "role": "Head of Digital Cryptography & Audit Ledger",
+      "email": "security.ycec@fatballot.org",
+      "phone": "+234 803 111 2224",
+      "avatar": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=400&q=80",
+      "tenure": "2025 - 2027"
+    },
+    {
+      "id": "ycec-5",
+      "name": "Mr. Victor Damilola Adeleke",
+      "role": "Director of Logistics, Accreditation & Collation",
+      "email": "logistics.ycec@fatballot.org",
+      "phone": "+234 803 111 2225",
+      "avatar": "https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?auto=format&fit=crop&w=400&q=80",
+      "tenure": "2025 - 2027"
+    }
+  ],
+  "votes": [
+    {
+      "id": "vote-1",
+      "voterRaNumber": "3001",
+      "officeId": "off-pres",
+      "choice": "candidate",
+      "candidateId": "cand-1",
+      "timestamp": "2026-09-12T10:15:00.000Z"
+    },
+    {
+      "id": "vote-2",
+      "voterRaNumber": "3001",
+      "officeId": "off-vp",
+      "choice": "candidate",
+      "candidateId": "cand-4",
+      "timestamp": "2026-09-12T10:16:00.000Z"
+    },
+    {
+      "id": "vote-3",
+      "voterRaNumber": "3001",
+      "officeId": "off-sec",
+      "choice": "against",
+      "candidateId": "cand-5",
+      "timestamp": "2026-09-12T15:22:41.087Z",
+      "ipAddress": "::1"
+    },
+    {
+      "id": "vote-4",
+      "voterRaNumber": "3002",
+      "officeId": "off-pres",
+      "choice": "candidate",
+      "candidateId": "cand-2",
+      "timestamp": "2026-09-12T11:05:00.000Z"
+    },
+    {
+      "id": "vote-5",
+      "voterRaNumber": "3002",
+      "officeId": "off-vp",
+      "choice": "candidate",
+      "candidateId": "cand-3",
+      "timestamp": "2026-09-12T11:06:00.000Z"
+    },
+    {
+      "id": "vote-6",
+      "voterRaNumber": "3002",
+      "officeId": "off-sec",
+      "choice": "against",
+      "candidateId": "cand-5",
+      "timestamp": "2026-09-12T11:07:00.000Z"
+    },
+    {
+      "id": "vote-7",
+      "voterRaNumber": "3004",
+      "officeId": "off-pres",
+      "choice": "candidate",
+      "candidateId": "cand-1",
+      "timestamp": "2026-09-12T12:30:00.000Z"
+    },
+    {
+      "id": "vote-1789234482072-1mqxb7",
+      "voterRaNumber": "1001",
+      "officeId": "off-pres",
+      "choice": "candidate",
+      "candidateId": "cand-1",
+      "timestamp": "2026-09-13T14:38:12.097Z",
+      "ipAddress": "::1"
+    },
+    {
+      "id": "vote-1789234493756-lcjqfz",
+      "voterRaNumber": "1001",
+      "officeId": "off-sec",
+      "choice": "against",
+      "candidateId": "cand-5",
+      "timestamp": "2026-09-12T17:34:53.756Z",
+      "ipAddress": "::1"
+    },
+    {
+      "id": "vote-1789234581164-yijsjw",
+      "voterRaNumber": "1001",
+      "officeId": "off-vp",
+      "choice": "candidate",
+      "candidateId": "cand-4",
+      "timestamp": "2026-09-12T17:36:21.164Z",
+      "ipAddress": "::1"
+    },
+    {
+      "id": "vote-1789234586033-otymw6",
+      "voterRaNumber": "1001",
+      "officeId": "off-pro",
+      "choice": "for",
+      "candidateId": "cand-10",
+      "timestamp": "2026-09-12T17:36:26.033Z",
+      "ipAddress": "::1"
+    },
+    {
+      "id": "vote-1789315804345-rilo79",
+      "voterRaNumber": "2001",
+      "officeId": "off-tres",
+      "choice": "candidate",
+      "candidateId": "cand-6",
+      "timestamp": "2026-09-13T16:10:04.345Z",
+      "ipAddress": "::1"
+    }
+  ],
+  "sessions": [
+    {
+      "token": "306e6494fcf32a68c7df0a146d33f3bc1088f3513b9c893cd655c5838bef455cadd3bc8c89149142",
+      "raNumber": "1002",
+      "userId": "vot-2",
+      "createdAt": "2026-09-14T14:52:40.750Z",
+      "expiresAt": "2026-09-15T14:52:40.750Z",
+      "deviceInfo": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"
+    },
+    {
+      "token": "e4d4731b75c3e37cd69f5f6de6d2a86e0a4cfcdb8ed15d6e23acb6d67d509519198c45fe9fa87b27",
+      "raNumber": "1001",
+      "userId": "vot-1",
+      "createdAt": "2026-09-15T10:09:24.219Z",
+      "expiresAt": "2026-09-16T10:09:24.219Z",
+      "deviceInfo": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"
+    }
+  ],
+  "magicLinks": [
+    {
+      "token": "b9a961651e9cb8ae4caa3ca4d235a19538bf592959d5711156ff09609dfd9eae",
+      "raNumber": "1001",
+      "email": "superadmin@fatballot.org",
+      "createdAt": "2026-09-15T10:09:24.192Z",
+      "expiresAt": "2026-09-15T10:24:24.192Z",
+      "used": true
+    }
+  ],
+  "screeningCriteria": [
+    {
+      "id": "crit-pres",
+      "officeId": "off-pres",
+      "title": "Executive Presidential Clearance Benchmark",
+      "criteria": [
+        "Valid constituent matriculation and good financial standing",
+        "Cumulative GPA above minimum threshold (3.0+)",
+        "Zero disciplinary indictment or examination malpractice records",
+        "Public asset and constitutional pledge disclosure",
+        "Certified leadership track record and public debate participation",
+        "Endorsement signatures from at least 25 accredited electorate members"
+      ]
+    },
+    {
+      "id": "crit-vp",
+      "officeId": "off-vp",
+      "title": "Vice Presidential Vetting Standards",
+      "criteria": [
+        "Good academic and administrative standing",
+        "Demonstrated committee coordination experience",
+        "Pledge of executive alignment and non-partisanship",
+        "Endorsement signatures from at least 15 registered constituents"
+      ]
+    },
+    {
+      "id": "crit-sec",
+      "officeId": "off-sec",
+      "title": "General Secretariat Procedural Competence",
+      "criteria": [
+        "Documentation, archival, and typing proficiency",
+        "No unresolved disciplinary disputes",
+        "Endorsement by at least 10 registered voters"
+      ]
+    }
+  ],
+  "candidateScreenings": [],
+  "agents": [
+    {
+      "id": "agent-1789316443026",
+      "voterId": "vot-3",
+      "voterRaNumber": "2001",
+      "voterName": "Adebayo Tunde",
+      "officeId": "off-vp",
+      "candidateId": "cand-3",
+      "candidateName": "Farouk Al-Hassan",
+      "assignedAt": "2026-09-13T16:20:43.026Z"
+    },
+    {
+      "id": "agent-1789317462470",
+      "voterId": "vot-6",
+      "voterRaNumber": "3002",
+      "voterName": "Fatima Bello",
+      "officeId": "off-pres",
+      "candidateId": "cand-2",
+      "candidateName": "Barr. Chioma Grace Okeke",
+      "assignedAt": "2026-09-13T16:37:42.470Z"
+    }
+  ],
+  "observers": [
+    {
+      "id": "obs-1",
+      "name": "Hon. Justice Kenneth Braithwaite",
+      "rank": "Chief Observer",
+      "office": "Civic Democracy International Watch",
+      "phone": "+234 809 555 1234",
+      "token": "obs_ken_88294a7e",
+      "createdAt": "2026-09-08T10:00:00.000Z"
+    }
+  ]
+}

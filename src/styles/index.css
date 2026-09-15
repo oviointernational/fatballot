@@ -1,0 +1,78 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg-primary: #FFFFFF;
+    --bg-surface: #F8FAFC;
+    --bg-card: #FFFFFF;
+    --border-color: #E2E8F0;
+    --text-primary: #0F172A;
+    --text-secondary: #64748B;
+  }
+
+  .dark {
+    /* Deep blue-black aesthetic */
+    --bg-primary: #080C15;
+    --bg-surface: #0E1524;
+    --bg-card: #141E34;
+    --border-color: #1E2E4E;
+    --text-primary: #F1F5F9;
+    --text-secondary: #94A3B8;
+  }
+
+  body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  }
+}
+
+/* Custom sleek scrollbars for independent scrolling containers */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.6);
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(51, 65, 85, 0.6);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(71, 85, 105, 0.8);
+}
+
+/* Material voting card highlight classes */
+.voted-material-green {
+  background-color: #E8F5E9 !important;
+  border-color: #4CAF50 !important;
+}
+
+.dark .voted-material-green {
+  background-color: #0F3020 !important;
+  border-color: #34D399 !important;
+}
+
+.unvoted-material-red {
+  background-color: #FFEBEE !important;
+  border-color: #EF5350 !important;
+}
+
+.dark .unvoted-material-red {
+  background-color: #321419 !important;
+  border-color: #F87171 !important;
+}
