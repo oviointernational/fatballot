@@ -1,6 +1,13 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { Voter } from '../types';
 
+// Supabase configuration
+const supabaseUrl = 'https://hfmteamawqiaqnvpgp.supabase.co';
+const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhmbXRlYW1hd3FpYXdhcW52cGdwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk0NjMyMjcsImV4cCI6MjEwNTAzOTIyN30.FFVyut3QFnFpNIkib53WVcWVOJGxyPJs9sq8esCsDtQ';
+
+import { createClient } from '@supabase/supabase-js';
+export const supa = createClient(supabaseUrl, supabaseAnonKey);
+
 interface MagicLinkInfo {
   email: string;
   token: string;
@@ -157,6 +164,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.removeItem('fatballot_token');
   };
 
+  const clearPendingMagicLink: () => void = () => setPendingMagicLink(null);
+  const clearSupersededError: () => void = () => setSupersededError(null);
+
   return (
     <AuthContext.Provider
       value={{
@@ -168,8 +178,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         requestMagicLink,
         verifyToken,
         logout,
-        clearPendingMagicLink: () => setPendingMagicLink(null),
-        clearSupersededError: () => setSupersededError(null),
+        clearPendingMagicLink,
+        clearSupersededError,
         quickLogin
       }}
     >

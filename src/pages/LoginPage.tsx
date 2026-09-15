@@ -1,20 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  Vote, 
   ShieldCheck, 
-  Mail, 
   ArrowRight, 
-  Smartphone, 
-  KeyRound, 
-  AlertCircle,
-  Sparkles,
-  CheckCircle2
+  AlertCircle
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useElection } from '../context/ElectionContext';
 
 export const LoginPage: React.FC<{ onNavigate: (page: string) => void }> = ({ onNavigate }) => {
-  const { requestMagicLink, verifyToken, quickLogin, user } = useAuth();
+  const { requestMagicLink, verifyToken, user } = useAuth();
   const { settings } = useElection();
 
   const [raInput, setRaInput] = useState('');
@@ -57,16 +51,6 @@ export const LoginPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
 
     if (!res.success) {
       setErrorMsg(res.message);
-    }
-  };
-
-  const handleQuickLogin = async (raNum: string) => {
-    setSubmitting(true);
-    setErrorMsg(null);
-    const success = await quickLogin(raNum);
-    setSubmitting(false);
-    if (success) {
-      onNavigate('dashboard');
     }
   };
 
@@ -140,54 +124,6 @@ export const LoginPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
             <p className="text-[11px] leading-relaxed">
               When authenticated, an encrypted session token is attached exclusively to this browser. Logging in on any other device automatically terminates prior sessions.
             </p>
-          </div>
-
-          {/* Pre-configured Demo Accounts for Instant Evaluation */}
-          <div className="pt-4 border-t border-gray-100 dark:border-[#1E2E4E] space-y-2.5">
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">
-                Demo Quick-Login Accounts
-              </span>
-              <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-            </div>
-
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <button
-                type="button"
-                onClick={() => handleQuickLogin('1001')}
-                className="p-2.5 rounded-xl bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-900/60 text-purple-700 dark:text-purple-300 font-medium hover:bg-purple-100 transition-colors text-left"
-              >
-                <div className="font-bold">Superadmin</div>
-                <div className="font-mono text-[10px] text-gray-500">RA-1001</div>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleQuickLogin('1002')}
-                className="p-2.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-900/60 text-indigo-700 dark:text-indigo-300 font-medium hover:bg-indigo-100 transition-colors text-left"
-              >
-                <div className="font-bold">Committee Admin</div>
-                <div className="font-mono text-[10px] text-gray-500">RA-1002</div>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleQuickLogin('2001')}
-                className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/60 text-amber-700 dark:text-amber-300 font-medium hover:bg-amber-100 transition-colors text-left"
-              >
-                <div className="font-bold">Contestant Adebayo</div>
-                <div className="font-mono text-[10px] text-gray-500">RA-2001</div>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleQuickLogin('3001')}
-                className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/60 text-emerald-700 dark:text-emerald-300 font-medium hover:bg-emerald-100 transition-colors text-left"
-              >
-                <div className="font-bold">Voter Emeka</div>
-                <div className="font-mono text-[10px] text-gray-500">RA-3001</div>
-              </button>
-            </div>
           </div>
         </div>
       </div>

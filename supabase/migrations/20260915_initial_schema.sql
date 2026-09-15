@@ -349,7 +349,7 @@ CREATE TABLE IF NOT EXISTS public.audit_log (
   actor_email TEXT,
   actor_role public."role_enum",
   details JSONB NOT NULL DEFAULT '{}'::jsonb,
-  previous_hash TEXT NOT NULL DEFAULT '0'.repeat(64),
+  previous_hash TEXT NOT NULL DEFAULT repeat('0', 64),
   hash TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

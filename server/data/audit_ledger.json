@@ -1114,5 +1114,84 @@
     },
     "previousHash": "c2f2b95a013e5da3cd010fcb09ed99a39de50184051494cc6288c779095765a0",
     "hash": "5e24a8178963be1001d8a13955aa53df2a3c04bbfb48c95c208a44d4df87907e"
+  },
+  {
+    "index": 68,
+    "timestamp": "2026-09-15T14:49:30.447Z",
+    "eventType": "AUTH_MAGIC_LINK_REQUESTED",
+    "actor": {
+      "raNumber": "3001",
+      "email": "emeka.nwosu@fatballot.org",
+      "name": "Emeka Nwosu"
+    },
+    "details": {
+      "ip": "::1"
+    },
+    "previousHash": "5e24a8178963be1001d8a13955aa53df2a3c04bbfb48c95c208a44d4df87907e",
+    "hash": "0738d8b3691d0d6763cf3baa357bcfe7e61afea09df9cb78001490109efdcdba"
+  },
+  {
+    "index": 69,
+    "timestamp": "2026-09-15T14:49:33.523Z",
+    "eventType": "AUTH_LOGIN_SUCCESS",
+    "actor": {
+      "raNumber": "3001",
+      "email": "emeka.nwosu@fatballot.org",
+      "name": "Emeka Nwosu",
+      "role": "voter"
+    },
+    "details": {
+      "deviceInfo": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+      "ip": "::1",
+      "singleDeviceEnforced": true
+    },
+    "previousHash": "0738d8b3691d0d6763cf3baa357bcfe7e61afea09df9cb78001490109efdcdba",
+    "hash": "d9014438fb5e2da142ff08a9b9cad92f3ecce56d4af01f03e50df090b88257a6"
+  },
+  {
+    "index": 70,
+    "timestamp": "2026-09-15T14:49:45.298Z",
+    "eventType": "AUTH_LOGOUT",
+    "actor": {
+      "raNumber": "3001",
+      "email": "emeka.nwosu@fatballot.org",
+      "name": "Emeka Nwosu"
+    },
+    "details": {},
+    "previousHash": "d9014438fb5e2da142ff08a9b9cad92f3ecce56d4af01f03e50df090b88257a6",
+    "hash": "f4b8734d178f851b854d13bc15fc9369d6be43acc28e1b163ce705dd929bfb83"
+  },
+  {
+    "index": 71,
+    "timestamp": "2026-09-15T14:49:51.903Z",
+    "eventType": "AUTH_MAGIC_LINK_REQUESTED",
+    "actor": {
+      "raNumber": "1001",
+      "email": "superadmin@fatballot.org",
+      "name": "Electoral SuperAdmin"
+    },
+    "details": {
+      "ip": "::1"
+    },
+    "previousHash": "f4b8734d178f851b854d13bc15fc9369d6be43acc28e1b163ce705dd929bfb83",
+    "hash": "e64b0abd50a0b2e207108fa1d39631295c9a844b10fc63ffcfe7f36fdc17d1db"
+  },
+  {
+    "index": 72,
+    "timestamp": "2026-09-15T14:49:53.182Z",
+    "eventType": "AUTH_LOGIN_SUCCESS",
+    "actor": {
+      "raNumber": "1001",
+      "email": "superadmin@fatballot.org",
+      "name": "Electoral SuperAdmin",
+      "role": "superadmin"
+    },
+    "details": {
+      "deviceInfo": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+      "ip": "::1",
+      "singleDeviceEnforced": true
+    },
+    "previousHash": "e64b0abd50a0b2e207108fa1d39631295c9a844b10fc63ffcfe7f36fdc17d1db",
+    "hash": "6e537188c91dd2175f8087711a02fd4907c10e7ea71d090cf7ca225dd9cfe0a6"
   }
 ]
