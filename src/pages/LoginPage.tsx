@@ -2,31 +2,19 @@ import React, { useState, useEffect } from 'react';
 import { 
   ShieldCheck, 
   ArrowRight, 
-  AlertCircle
+  AlertCircle, 
+  MailCheck
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useElection } from '../context/ElectionContext';
 
 export const LoginPage: React.FC<{ onNavigate: (page: string) => void }> = ({ onNavigate }) => {
-  const { requestMagicLink, verifyToken, user } = useAuth();
+  const { requestMagicLink, user, pendingMagicLink } = useAuth();
   const { settings } = useElection();
 
   const [raInput, setRaInput] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  // Check URL query parameters for magic link token (e.g. /login?token=xyz)
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const token = params.get('token');
-    if (token) {
-      verifyToken(token).then((success) => {
-        if (success) {
-          onNavigate('dashboard');
-        }
-      });
-    }
-  }, [verifyToken, onNavigate]);
 
   // If already logged in, redirect
   useEffect(() => {
@@ -79,41 +67,66 @@ export const LoginPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-xs font-bold text-gray-700 dark:text-slate-300 mb-2">
-                Enter Your RA Number
-              </label>
-
-              {/* Input with pre-filled fixed "RA-" prefix */}
-              <div className="flex items-center rounded-2xl border-2 border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] overflow-hidden focus-within:border-blue-600 focus-within:ring-4 focus-within:ring-blue-500/20 transition-all">
-                <span className="px-4 py-3 bg-gray-200 dark:bg-slate-800 text-gray-700 dark:text-slate-200 font-mono font-extrabold text-sm border-r border-gray-300 dark:border-[#1E2E4E] select-none">
-                  RA-
-                </span>
-                <input
-                  type="number"
-                  required
-                  autoFocus
-                  placeholder="e.g. 3001"
-                  value={raInput}
-                  onChange={(e) => setRaInput(e.target.value)}
-                  className="flex-1 px-4 py-3 bg-transparent text-gray-900 dark:text-white font-mono font-bold text-base outline-none placeholder:text-gray-400 placeholder:font-normal"
-                />
+          {pendingMagicLink ? (
+            <div className="space-y-4">
+              <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-900/50 text-emerald-800 dark:text-emerald-300 flex items-start space-x-3">
+                <MailCheck className="w-5 h-5 shrink-0 mt-0.5" />
+                <div className="text-xs leading-relaxed space-y-1">
+                  <p className="font-bold">Sign-in link sent to your email.</p>
+                  <p>
+                    Check <span className="font-mono font-semibold">{pendingMagicLink.email}</span> and click the link to
+                    sign in securely. The link works once and expires in 15 minutes.
+                  </p>
+                </div>
               </div>
-              <p className="text-[11px] text-gray-400 dark:text-slate-400 mt-1.5">
-                Only the numerical characters are required. The "RA-" is already provided.
-              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setRaInput('');
+                  setErrorMsg(null);
+                }}
+                className="w-full py-2.5 px-4 text-center text-sm font-semibold text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200 transition-colors"
+              >
+                Use a different RA Number
+              </button>
             </div>
+          ) : (
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-700 dark:text-slate-300 mb-2">
+                  Enter Your RA Number
+                </label>
 
-            <button
-              type="submit"
-              disabled={submitting}
-              className="w-full py-3.5 px-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold text-sm rounded-2xl shadow-lg shadow-blue-500/25 transition-all flex items-center justify-center space-x-2 group"
-            >
-              <span>{submitting ? 'Generating Secure Link...' : 'Request Sign-In Magic Link'}</span>
-              <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-            </button>
-          </form>
+                {/* Input with pre-filled fixed "RA-" prefix */}
+                <div className="flex items-center rounded-2xl border-2 border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] overflow-hidden focus-within:border-blue-600 focus-within:ring-4 focus-within:ring-blue-500/20 transition-all">
+                  <span className="px-4 py-3 bg-gray-200 dark:bg-slate-800 text-gray-700 dark:text-slate-200 font-mono font-extrabold text-sm border-r border-gray-300 dark:border-[#1E2E4E] select-none">
+                    RA-
+                  </span>
+                  <input
+                    type="number"
+                    required
+                    autoFocus
+                    placeholder="e.g. 3001"
+                    value={raInput}
+                    onChange={(e) => setRaInput(e.target.value)}
+                    className="flex-1 px-4 py-3 bg-transparent text-gray-900 dark:text-white font-mono font-bold text-base outline-none placeholder:text-gray-400 placeholder:font-normal"
+                  />
+                </div>
+                <p className="text-[11px] text-gray-400 dark:text-slate-400 mt-1.5">
+                  Only the numerical characters are required. The "RA-" is already provided.
+                </p>
+              </div>
+
+              <button
+                type="submit"
+                disabled={submitting}
+                className="w-full py-3.5 px-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold text-sm rounded-2xl shadow-lg shadow-blue-500/25 transition-all flex items-center justify-center space-x-2 group disabled:opacity-60"
+              >
+                <span>{submitting ? 'Sending Secure Link...' : 'Send Sign-In Email'}</span>
+                <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+              </button>
+            </form>
+          )}
 
           {/* Security details */}
           <div className="pt-4 border-t border-gray-100 dark:border-[#1E2E4E] space-y-2 text-xs text-gray-500 dark:text-slate-400">

@@ -200,6 +200,11 @@ export class Database {
     return this.data.voters.find(v => v.id === id);
   }
 
+  public getVoterByEmail(email: string): Voter | undefined {
+    const clean = email.trim().toLowerCase();
+    return this.data.voters.find(v => v.email.trim().toLowerCase() === clean);
+  }
+
   public addVoter(payload: {
     email: string;
     firstName: string;
@@ -755,6 +760,15 @@ export class Database {
       throw new Error('Voter profile not found.');
     }
 
+    const sessionToken = this.createExclusiveSession(voter, deviceInfo);
+    return { voter, sessionToken };
+  }
+
+  /**
+   * Creates a single-device-exclusive session for a voter.
+   * Any existing sessions for the voter's RA Number are invalidated first.
+   */
+  public createExclusiveSession(voter: Voter, deviceInfo?: string): string {
     // SINGLE DEVICE ENFORCEMENT: Invalidate any existing sessions for this RA Number!
     this.data.sessions = this.data.sessions.filter(
       s => s.raNumber.replace(/^RA-?/i, '').trim() !== voter.raNumber.replace(/^RA-?/i, '').trim()
@@ -774,7 +788,7 @@ export class Database {
     this.data.sessions.push(session);
     this.saveData();
 
-    return { voter, sessionToken };
+    return sessionToken;
   }
 
   public getSession(sessionToken: string): UserSession | undefined {

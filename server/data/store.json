@@ -556,16 +556,7 @@
       "timestamp": "2026-09-12T12:30:00.000Z"
     }
   ],
-  "sessions": [
-    {
-      "token": "a2dc3c4453a350e96d3380ce2e29438b9111113eda1ba2dd519b4770eb1747eb873e0443327456b0",
-      "raNumber": "1001",
-      "userId": "vot-1",
-      "createdAt": "2026-09-15T14:49:53.181Z",
-      "expiresAt": "2026-09-16T14:49:53.181Z",
-      "deviceInfo": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"
-    }
-  ],
+  "sessions": [],
   "magicLinks": [
     {
       "token": "edcc29b8f2261f1ca5047bd1c7693341695060351f18ea1517d342e0ab9d4776",

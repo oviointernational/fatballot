@@ -11,7 +11,6 @@ import { AdminPage } from "./pages/AdminPage";
 import { LogPage } from "./pages/LogPage";
 import { LoginPage } from "./pages/LoginPage";
 import { ObserverPortal } from "./pages/ObserverPortal";
-import { SimulatedEmailModal } from "./components/common/SimulatedEmailModal";
 
 // Detect observer token from URL query string
 function getObserverToken(): string | null {
@@ -63,11 +62,8 @@ const AppContent: React.FC = () => {
           {currentPage === "admin" && <AdminPage onNavigate={handleNavigate} />}
           {currentPage === "log" && <LogPage onNavigate={handleNavigate} />}
           {currentPage === "login" && <LoginPage onNavigate={handleNavigate} />}
-        </main>
+</main>
       </div>
-
-      {/* Simulated Email Magic Link Modal */}
-      <SimulatedEmailModal />
     </div>
   );
 };

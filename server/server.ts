@@ -8,6 +8,9 @@ import { auditLedger, AuditActor } from './auditLedger';
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Firebase web API key used to verify passwordless sign-in ID tokens server-side
+const FIREBASE_API_KEY = 'AIzaSyDBzRlGJfUZXU86t5xMg1Q18rdjBbXzsEA';
+
 app.use(cors());
 app.use(express.json());
 
@@ -460,15 +463,14 @@ app.post('/api/auth/request-magic-link', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'RA_REQUIRED', message: 'Please enter your RA Number.' });
   }
 
-  const voter = db.getVoterByRA(raNumber);
+  // GATE: The email bound to the RA Number is looked up. Unknown RA -> Access Denied.
+  const voter = db.getVoterByRA(String(raNumber).replace(/^RA-?/i, ''));
   if (!voter) {
     return res.status(404).json({
       error: 'VOTER_NOT_FOUND',
-      message: `No voter found with RA Number ${raNumber}. Please contact the Electoral Committee.`
+      message: `Access Denied. No voter found with RA Number ${raNumber.replace(/^RA-?/i, '')}. Please contact the Electoral Committee.`
     });
   }
-
-  const magicLink = db.createMagicLink(voter.raNumber, voter.email);
 
   auditLedger.recordEvent('AUTH_MAGIC_LINK_REQUESTED', {
     raNumber: voter.raNumber,
@@ -476,24 +478,58 @@ app.post('/api/auth/request-magic-link', (req: Request, res: Response) => {
     name: `${voter.firstName} ${voter.lastName}`
   }, { ip: req.ip });
 
+  // The client triggers Firebase's passwordless email with this bound address
   res.json({
     success: true,
     message: `A sign-in link has been dispatched to ${voter.email.replace(/(.{2})(.*)(?=@)/, '$1***')}.`,
     email: voter.email,
-    token: magicLink.token,
-    magicLinkUrl: `/login?token=${magicLink.token}`,
     voterName: `${voter.firstName} ${voter.lastName}`
   });
 });
 
-app.post('/api/auth/verify-magic-link', (req: Request, res: Response) => {
-  const { token, deviceInfo } = req.body;
-  if (!token) {
-    return res.status(400).json({ error: 'TOKEN_REQUIRED', message: 'Authentication token is required.' });
+// Firebase passwordless email-link sign-in completion.
+// Verifies the Firebase ID token, resolves the bound voter, then issues the exclusive session.
+app.post('/api/auth/firebase-login', async (req: Request, res: Response) => {
+  const { idToken, deviceInfo } = req.body;
+  if (!idToken) {
+    return res.status(400).json({ error: 'TOKEN_REQUIRED', message: 'ID token is required.' });
   }
 
   try {
-    const { voter, sessionToken } = db.verifyMagicLink(token, deviceInfo || req.headers['user-agent']);
+    // Validate the ID token against Firebase's identitytoolkit API using the web API key
+    const lookupRes = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${FIREBASE_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken })
+      }
+    );
+
+    const lookupData = await lookupRes.json();
+    const firebaseUser = lookupData?.users?.[0];
+
+    if (!lookupRes.ok || !firebaseUser) {
+      return res.status(401).json({
+        error: 'INVALID_TOKEN',
+        message: 'The sign-in link is invalid, expired, or was already used.'
+      });
+    }
+
+    if (!firebaseUser.email) {
+      return res.status(401).json({ error: 'NO_EMAIL', message: 'No email associated with this sign-in.' });
+    }
+
+    // Map back to the voter registered under that email
+    const voter = db.getVoterByEmail(firebaseUser.email);
+    if (!voter) {
+      return res.status(403).json({
+        error: 'ACCESS_DENIED',
+        message: 'Access Denied. This email is not registered with the electoral roll.'
+      });
+    }
+
+    const sessionToken = db.createExclusiveSession(voter, deviceInfo || req.headers['user-agent']);
 
     auditLedger.recordEvent('AUTH_LOGIN_SUCCESS', {
       raNumber: voter.raNumber,
@@ -501,6 +537,7 @@ app.post('/api/auth/verify-magic-link', (req: Request, res: Response) => {
       name: `${voter.firstName} ${voter.lastName}`,
       role: voter.role
     }, {
+      provider: 'firebase-email-link',
       deviceInfo: deviceInfo || req.headers['user-agent'],
       ip: req.ip,
       singleDeviceEnforced: true
@@ -526,6 +563,53 @@ app.post('/api/auth/verify-magic-link', (req: Request, res: Response) => {
   } catch (err: any) {
     res.status(400).json({ error: 'VERIFICATION_FAILED', message: err.message });
   }
+});
+
+// Dev / testing shortcut: creates an exclusive session directly for an RA number.
+// Powers the quick-login buttons in AdminPage without needing Firebase.
+app.post('/api/auth/dev-login', (req: Request, res: Response) => {
+  const { raNumber, deviceInfo } = req.body;
+  if (!raNumber) {
+    return res.status(400).json({ error: 'RA_REQUIRED', message: 'RA number is required.' });
+  }
+
+  const cleanRA = String(raNumber).replace(/^RA-?/i, '').trim();
+  const voter = db.getVoterByRA(cleanRA);
+  if (!voter) {
+    return res.status(404).json({ error: 'VOTER_NOT_FOUND', message: `No voter found with RA Number ${cleanRA}.` });
+  }
+
+  const sessionToken = db.createExclusiveSession(voter, deviceInfo || req.headers['user-agent']);
+
+  auditLedger.recordEvent('AUTH_LOGIN_SUCCESS', {
+    raNumber: voter.raNumber,
+    email: voter.email,
+    name: `${voter.firstName} ${voter.lastName}`,
+    role: voter.role
+  }, {
+    provider: 'dev-shortcut',
+    deviceInfo: deviceInfo || req.headers['user-agent'],
+    ip: req.ip,
+    singleDeviceEnforced: true
+  });
+
+  res.json({
+    success: true,
+    sessionToken,
+    voter: {
+      id: voter.id,
+      raNumber: voter.raNumber,
+      email: voter.email,
+      firstName: voter.firstName,
+      middleName: voter.middleName,
+      lastName: voter.lastName,
+      role: voter.role,
+      isAccredited: voter.isAccredited,
+      department: voter.department,
+      phone: voter.phone,
+      avatar: voter.avatar
+    }
+  });
 });
 
 app.get('/api/auth/me', requireAuth, (req: AuthenticatedRequest, res: Response) => {
