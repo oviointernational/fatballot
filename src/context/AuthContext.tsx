@@ -7,12 +7,10 @@ import {
 } from 'firebase/auth';
 import { firebaseAuth, EMAIL_LINK_REDIRECT_URL } from '../lib/firebase';
 
-// Supabase configuration
-const supabaseUrl = 'https://hfmteamawqiaqnvpgp.supabase.co';
-const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhmbXRlYW1hd3FpYXdhcW52cGdwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk0NjMyMjcsImV4cCI6MjEwNTAzOTIyN30.FFVyut3QFnFpNIkib53WVcWVOJGxyPJs9sq8esCsDtQ';
-
-import { createClient } from '@supabase/supabase-js';
-export const supa = createClient(supabaseUrl, supabaseAnonKey);
+// Supabase is no longer used on the client side; the backend persists via
+// server/supabase.ts with environment-configured credentials.
+// This export is kept only if downstream code references it.
+export const supa = null;
 
 interface MagicLinkInfo {
   email: string;

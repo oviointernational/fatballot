@@ -1,7 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { Office, CandidateProfile, SiteSettings, CastVote, OfficeLiveResult, SystemStats } from '../types';
 import { useAuth } from './AuthContext';
-import { WS_ORIGIN } from '../lib/config';
 
 interface ElectionContextType {
   settings: SiteSettings;
@@ -89,44 +88,31 @@ export const ElectionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     fetchMyVotes();
   }, [fetchMyVotes, user]);
 
-  // Real-time WebSocket connection
+  // Live results polling (works on stateless deployments; replaces WebSockets)
   useEffect(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = WS_ORIGIN
-      ? `${WS_ORIGIN}/ws`
-      : `${protocol}//${window.location.host}/ws`;
-    let ws: WebSocket | null = null;
-    let reconnectTimeout: any = null;
+    let cancelled = false;
+    let timer: any = null;
 
-    const connectWs = () => {
+    const refresh = async () => {
+      if (cancelled) return;
       try {
-        ws = new WebSocket(wsUrl);
-        ws.onmessage = (event) => {
-          try {
-            const msg = JSON.parse(event.data);
-            if (msg.type === 'LIVE_RESULTS_UPDATE') {
-              setLiveResults(msg.data);
-              // Also refresh stats
-              fetch('/api/stats').then(res => res.json()).then(setStats).catch(() => {});
-            }
-          } catch (e) {
-            console.error('WebSocket parse error', e);
-          }
-        };
-
-        ws.onclose = () => {
-          reconnectTimeout = setTimeout(connectWs, 3000);
-        };
+        const [res, statsRes] = await Promise.all([
+          fetch('/api/votes/live-results'),
+          fetch('/api/stats')
+        ]);
+        if (!cancelled && res.ok) setLiveResults(await res.json());
+        if (!cancelled && statsRes.ok) setStats(await statsRes.json());
       } catch (e) {
-        console.error('WebSocket error', e);
+        console.error('Live results refresh error', e);
       }
+      if (!cancelled) timer = setTimeout(refresh, 4000);
     };
 
-    connectWs();
+    refresh();
 
     return () => {
-      if (ws) ws.close();
-      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      cancelled = true;
+      if (timer) clearTimeout(timer);
     };
   }, []);
 

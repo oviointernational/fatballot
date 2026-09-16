@@ -14,7 +14,6 @@ import {
   Lock
 } from "lucide-react";
 import { OfficeLiveResult, SystemStats, TimelineItem } from "../types";
-import { WS_ORIGIN } from "../lib/config";
 
 interface ObserverPortalProps {
   token: string;
@@ -61,10 +60,10 @@ export const ObserverPortal: React.FC<ObserverPortalProps> = ({ token }) => {
     verify();
   }, [token]);
 
-  const fetchData = async () => {
+const fetchData = async () => {
     try {
       const [resultsRes, statsRes, timelineRes] = await Promise.all([
-        fetch("/api/live-results"),
+        fetch("/api/votes/live-results"),
         fetch("/api/stats"),
         fetch("/api/timeline")
       ]);
@@ -78,25 +77,22 @@ export const ObserverPortal: React.FC<ObserverPortalProps> = ({ token }) => {
   };
 
   useEffect(() => {
-    if (verified) {
-      fetchData();
-// WebSocket for live results
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = WS_ORIGIN
-        ? `${WS_ORIGIN}/ws`
-        : `${protocol}//${window.location.host}/ws`;
-      const ws = new WebSocket(wsUrl);
-      ws.onmessage = (msg) => {
-        try {
-          const data = JSON.parse(msg.data);
-          if (data.type === "LIVE_RESULTS_UPDATE") {
-            setLiveResults(data.results);
-            setLastUpdated(new Date());
-          }
-        } catch {}
-      };
-      return () => ws.close();
-    }
+    if (!verified) return;
+    let cancelled = false;
+    let timer: any = null;
+
+    const refresh = async () => {
+      if (cancelled) return;
+      await fetchData();
+      if (!cancelled) timer = setTimeout(refresh, 4000);
+    };
+
+    refresh();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, [verified]);
 
   if (loading) {

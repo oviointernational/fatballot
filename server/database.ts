@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { SupabaseClient } from '@supabase/supabase-js';
+import { hasSupabase, getSupabase } from './supabase';
 import {
   Office,
   CandidateProfile,
@@ -64,10 +66,70 @@ const STORE_FILE = path.join(DATA_DIR, 'store.json');
 
 export class Database {
   private data: StoreData;
+  private supabase: SupabaseClient | null = null;
+  private supabaseReady = false;
+  private pendingWrite = false;
+  private autoRefreshTimer: NodeJS.Timeout | null = null;
 
   constructor() {
     this.ensureDataDir();
     this.data = this.loadData();
+    if (hasSupabase()) {
+      this.supabase = getSupabase();
+    }
+  }
+
+  // Loads (or seeds) the store from Supabase. Must be awaited before serving
+  // requests so a fresh cold start never serves defaults over real data.
+  public async init() {
+    if (!this.supabase) return;
+    await this.pullFromSupabase();
+    this.supabaseReady = true;
+    this.startAutoRefresh();
+  }
+
+  private startAutoRefresh() {
+    if (this.autoRefreshTimer) clearInterval(this.autoRefreshTimer);
+    this.autoRefreshTimer = setInterval(() => {
+      if (this.supabase && this.supabaseReady && !this.pendingWrite) {
+        this.pullFromSupabase().catch(err =>
+          console.error('Supabase refresh failed:', err)
+        );
+      }
+    }, 15000);
+    this.autoRefreshTimer.unref?.();
+  }
+
+  private async pullFromSupabase() {
+    if (!this.supabase) return;
+    const { data, error } = await this.supabase
+      .from('app_store')
+      .select('data')
+      .eq('key', 'store')
+      .maybeSingle();
+
+    if (error) {
+      console.error('Supabase store read failed:', error.message);
+      return;
+    }
+
+    if (data?.data) {
+      this.data = this.normalizeStore(data.data as Partial<StoreData>);
+    } else {
+      // No blob persisted yet — seed the remote store with current data.
+      await this.pushToSupabase(this.data);
+    }
+  }
+
+  private async pushToSupabase(dataToSave: StoreData): Promise<void> {
+    if (!this.supabase) return;
+    const payload = JSON.parse(JSON.stringify(dataToSave));
+    const { error } = await this.supabase
+      .from('app_store')
+      .upsert({ key: 'store', data: payload, updated_at: new Date().toISOString() });
+    if (error) {
+      console.error('Supabase store save failed:', error.message);
+    }
   }
 
   private ensureDataDir() {
@@ -76,41 +138,44 @@ export class Database {
     }
   }
 
+  private normalizeStore(parsed: Partial<StoreData>): StoreData {
+    if (typeof parsed !== 'object' || parsed === null) parsed = {};
+    // Ensure new arrays exist if loading from prior format
+    if (!parsed.screeningCriteria) parsed.screeningCriteria = [...initialScreeningCriteria];
+    if (!parsed.candidateScreenings) parsed.candidateScreenings = [];
+    if (!parsed.agents) parsed.agents = [...initialAgents];
+    if (!parsed.observers) parsed.observers = [...initialObservers];
+    if (parsed.settings && !parsed.settings.permissions) parsed.settings.permissions = { ...initialSettings.permissions };
+
+    return {
+      settings: parsed.settings ?? { ...initialSettings },
+      offices: parsed.offices ?? [...initialOffices],
+      candidates: parsed.candidates ?? [...initialCandidates],
+      voters: parsed.voters ?? [...initialVoters],
+      timeline: parsed.timeline ?? [...initialTimeline],
+      ycec: parsed.ycec ?? [...initialYCEC],
+      votes: parsed.votes ?? [...initialVotes],
+      sessions: parsed.sessions ?? [],
+      magicLinks: parsed.magicLinks ?? [],
+      screeningCriteria: parsed.screeningCriteria ?? [...initialScreeningCriteria],
+      candidateScreenings: parsed.candidateScreenings ?? [],
+      agents: parsed.agents ?? [...initialAgents],
+      observers: parsed.observers ?? [...initialObservers]
+    };
+  }
+
   private loadData(): StoreData {
     try {
       if (fs.existsSync(STORE_FILE)) {
         const raw = fs.readFileSync(STORE_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
-        
-        // Ensure new arrays exist if loading from prior format
-        if (!parsed.screeningCriteria) parsed.screeningCriteria = [...initialScreeningCriteria];
-        if (!parsed.candidateScreenings) parsed.candidateScreenings = [];
-        if (!parsed.agents) parsed.agents = [...initialAgents];
-        if (!parsed.observers) parsed.observers = [...initialObservers];
-        if (!parsed.settings.permissions) parsed.settings.permissions = { ...initialSettings.permissions };
-
-        return parsed;
+        return this.normalizeStore(parsed);
       }
     } catch (err) {
       console.error('Error loading store file, falling back to defaults:', err);
     }
 
-    const defaultData: StoreData = {
-      settings: { ...initialSettings },
-      offices: [...initialOffices],
-      candidates: [...initialCandidates],
-      voters: [...initialVoters],
-      timeline: [...initialTimeline],
-      ycec: [...initialYCEC],
-      votes: [...initialVotes],
-      sessions: [],
-      magicLinks: [],
-      screeningCriteria: [...initialScreeningCriteria],
-      candidateScreenings: [],
-      agents: [...initialAgents],
-      observers: [...initialObservers]
-    };
-
+    const defaultData = this.normalizeStore({});
     this.saveData(defaultData);
     return defaultData;
   }
@@ -120,6 +185,17 @@ export class Database {
       fs.writeFileSync(STORE_FILE, JSON.stringify(dataToSave, null, 2), 'utf-8');
     } catch (err) {
       console.error('Error saving store to disk:', err);
+    }
+
+    if (this.supabase && this.supabaseReady) {
+      this.pendingWrite = true;
+      this.pushToSupabase(dataToSave)
+        .then(() => {
+          this.pendingWrite = false;
+        })
+        .catch(() => {
+          this.pendingWrite = false;
+        });
     }
   }
 

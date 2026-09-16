@@ -1,6 +1,8 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { SupabaseClient } from '@supabase/supabase-js';
+import { hasSupabase, getSupabase } from './supabase';
 
 export interface AuditActor {
   id?: string;
@@ -30,14 +32,94 @@ export interface VerificationResult {
 const DATA_DIR = path.join(process.cwd(), 'server', 'data');
 const LEDGER_FILE = path.join(DATA_DIR, 'audit_ledger.json');
 
+// Supabase jsonb sorts object keys alphabetically, which changes the output
+// of JSON.stringify and therefore breaks hash verification. A deterministic
+// (key-sorted) serializer ensures the hash input is identical regardless of
+// storage round-trips.
+function stableStringify(obj: any): string {
+  if (obj === null || obj === undefined) return 'null';
+  if (typeof obj !== 'object') return JSON.stringify(obj);
+  if (Array.isArray(obj)) return `[${obj.map(stableStringify).join(',')}]`;
+  const sorted = Object.keys(obj).sort().map(k => `${JSON.stringify(k)}:${stableStringify(obj[k])}`);
+  return `{${sorted.join(',')}}`;
+}
+
 export class AuditLedger {
   private chain: AuditBlock[] = [];
+  private supabase: SupabaseClient | null = null;
+  private supabaseReady = false;
+  private pendingWrite = false;
+  private autoRefreshTimer: NodeJS.Timeout | null = null;
 
   constructor() {
     this.ensureDataDir();
     this.loadChain();
     if (this.chain.length === 0) {
       this.createGenesisBlock();
+    }
+    if (hasSupabase()) {
+      this.supabase = getSupabase();
+    }
+  }
+
+  // Loads the ledger from Supabase (source of truth on serverless). Genesis is
+  // re-created only when no chain exists anywhere. A one-time rehash repair
+  // fixes chains whose hashes were corrupted by jsonb's key sorting.
+  public async init() {
+    if (!this.supabase) return;
+    await this.pullFromSupabase();
+    if (this.chain.length === 0) {
+      this.createGenesisBlock();
+    }
+    // One-time repair: jsonb sorts object keys, breaking previously-recorded
+    // hashes. Rehash the entire chain and persist the corrected hashes.
+    if (this.rehashChain()) {
+      await this.pushToSupabase(this.chain);
+    }
+    this.supabaseReady = true;
+    this.startAutoRefresh();
+  }
+
+  private startAutoRefresh() {
+    if (this.autoRefreshTimer) clearInterval(this.autoRefreshTimer);
+    this.autoRefreshTimer = setInterval(() => {
+      if (this.supabase && this.supabaseReady && !this.pendingWrite) {
+        this.pullFromSupabase().catch(err =>
+          console.error('Supabase ledger refresh failed:', err)
+        );
+      }
+    }, 15000);
+    this.autoRefreshTimer.unref?.();
+  }
+
+  private async pullFromSupabase() {
+    if (!this.supabase) return;
+    const { data, error } = await this.supabase
+      .from('app_store')
+      .select('data')
+      .eq('key', 'ledger')
+      .maybeSingle();
+
+    if (error) {
+      console.error('Supabase ledger read failed:', error.message);
+      return;
+    }
+
+    if (data?.data && Array.isArray(data.data)) {
+      this.chain = data.data as AuditBlock[];
+    } else {
+      // No remote ledger yet — seed it with whatever exists locally.
+      await this.pushToSupabase(this.chain);
+    }
+  }
+
+  private async pushToSupabase(chain: AuditBlock[]): Promise<void> {
+    if (!this.supabase) return;
+    const { error } = await this.supabase
+      .from('app_store')
+      .upsert({ key: 'ledger', data: chain, updated_at: new Date().toISOString() });
+    if (error) {
+      console.error('Supabase ledger save failed:', error.message);
     }
   }
 
@@ -55,7 +137,7 @@ export class AuditLedger {
     details: Record<string, any>,
     previousHash: string
   ): string {
-    const dataString = `${index}:${timestamp}:${eventType}:${JSON.stringify(actor)}:${JSON.stringify(details)}:${previousHash}`;
+    const dataString = `${index}:${timestamp}:${eventType}:${stableStringify(actor)}:${stableStringify(details)}:${previousHash}`;
     return crypto.createHash('sha256').update(dataString).digest('hex');
   }
 
@@ -81,6 +163,42 @@ export class AuditLedger {
     this.saveChain();
   }
 
+  // Recomputes all hashes in the chain using the key-sorted serializer so
+  // hashes survive jsonb round-trips. Also repairs previousHash links after
+  // any earlier block's hash changed. Returns true if any block was updated.
+  private rehashChain(): boolean {
+    let changed = false;
+    for (let i = 0; i < this.chain.length; i++) {
+      const block = this.chain[i];
+      // Fix previousHash to match the (possibly rehashed) preceding block.
+      if (i === 0) {
+        if (block.previousHash !== '0'.repeat(64)) {
+          block.previousHash = '0'.repeat(64);
+          changed = true;
+        }
+      } else {
+        const prevHash = this.chain[i - 1].hash;
+        if (block.previousHash !== prevHash) {
+          block.previousHash = prevHash;
+          changed = true;
+        }
+      }
+      const recomputedHash = this.calculateHash(
+        block.index,
+        block.timestamp,
+        block.eventType,
+        block.actor,
+        block.details,
+        block.previousHash
+      );
+      if (block.hash !== recomputedHash) {
+        block.hash = recomputedHash;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
   private loadChain() {
     try {
       if (fs.existsSync(LEDGER_FILE)) {
@@ -93,11 +211,22 @@ export class AuditLedger {
     }
   }
 
-  private saveChain() {
+  private saveChain(chainToSave: AuditBlock[] = this.chain) {
     try {
-      fs.writeFileSync(LEDGER_FILE, JSON.stringify(this.chain, null, 2), 'utf-8');
+      fs.writeFileSync(LEDGER_FILE, JSON.stringify(chainToSave, null, 2), 'utf-8');
     } catch (err) {
       console.error('Failed to save audit ledger to disk', err);
+    }
+
+    if (this.supabase && this.supabaseReady) {
+      this.pendingWrite = true;
+      this.pushToSupabase(chainToSave)
+        .then(() => {
+          this.pendingWrite = false;
+        })
+        .catch(() => {
+          this.pendingWrite = false;
+        });
     }
   }
 
