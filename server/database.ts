@@ -86,7 +86,7 @@ export class Database {
   // Loads (or seeds) the store from Supabase. Must be awaited before serving
   // requests so a fresh cold start never serves defaults over real data.
   public async init() {
-    if (!this.supabase) return;
+    if (!this.supabase || this.supabaseReady) return;
     await this.pullFromSupabase();
     this.supabaseReady = true;
     this.startAutoRefresh();

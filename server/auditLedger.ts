@@ -68,17 +68,11 @@ export class AuditLedger {
   // re-created only when no chain exists anywhere. A one-time rehash repair
   // fixes chains whose hashes were corrupted by jsonb's key sorting.
   public async init() {
-    if (!this.supabase) return;
+    if (!this.supabase || this.supabaseReady) return;
     await this.pullFromSupabase();
     this.supabaseReady = true;
     if (this.chain.length === 0) {
       this.createGenesisBlock();
-    }
-    // One-time repair: jsonb sorts object keys, breaking previously-recorded
-    // hashes. Rehash the chain with the key-sorted serializer and persist any
-    // corrections so old corrupted chains self-heal on first contact.
-    if (this.rehashChain()) {
-      await this.pushToSupabase(this.chain);
     }
     this.startAutoRefresh();
   }
@@ -110,6 +104,11 @@ export class AuditLedger {
 
     if (data?.data && Array.isArray(data.data)) {
       this.chain = data.data as AuditBlock[];
+      // Self-heal: jsonb sorts object keys, breaking hashes for chains written
+      // before the key-sorted serializer. Rehash (idempotent) and persist.
+      if (this.rehashChain()) {
+        await this.pushToSupabase(this.chain);
+      }
     } else {
       // No remote ledger yet — seed it with whatever exists locally.
       await this.pushToSupabase(this.chain);
