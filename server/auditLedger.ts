@@ -52,13 +52,15 @@ export class AuditLedger {
   private autoRefreshTimer: NodeJS.Timeout | null = null;
 
   constructor() {
-    this.ensureDataDir();
-    this.loadChain();
-    if (this.chain.length === 0) {
-      this.createGenesisBlock();
-    }
-    if (hasSupabase()) {
+    const usingSupabase = hasSupabase();
+    if (usingSupabase) {
       this.supabase = getSupabase();
+    } else {
+      this.ensureDataDir();
+      this.loadChain();
+      if (this.chain.length === 0) {
+        this.createGenesisBlock();
+      }
     }
   }
 
@@ -68,15 +70,16 @@ export class AuditLedger {
   public async init() {
     if (!this.supabase) return;
     await this.pullFromSupabase();
+    this.supabaseReady = true;
     if (this.chain.length === 0) {
       this.createGenesisBlock();
     }
     // One-time repair: jsonb sorts object keys, breaking previously-recorded
-    // hashes. Rehash the entire chain and persist the corrected hashes.
+    // hashes. Rehash the chain with the key-sorted serializer and persist any
+    // corrections so old corrupted chains self-heal on first contact.
     if (this.rehashChain()) {
       await this.pushToSupabase(this.chain);
     }
-    this.supabaseReady = true;
     this.startAutoRefresh();
   }
 
@@ -124,8 +127,13 @@ export class AuditLedger {
   }
 
   private ensureDataDir() {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
+    try {
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+    } catch (err) {
+      // Read-only filesystem (serverless) — Supabase handles persistence.
+      console.warn('Local data dir unavailable, using Supabase only:', (err as Error).message);
     }
   }
 
@@ -200,6 +208,7 @@ export class AuditLedger {
   }
 
   private loadChain() {
+    if (this.supabase) return;
     try {
       if (fs.existsSync(LEDGER_FILE)) {
         const raw = fs.readFileSync(LEDGER_FILE, 'utf-8');
@@ -212,13 +221,16 @@ export class AuditLedger {
   }
 
   private saveChain(chainToSave: AuditBlock[] = this.chain) {
-    try {
-      fs.writeFileSync(LEDGER_FILE, JSON.stringify(chainToSave, null, 2), 'utf-8');
-    } catch (err) {
-      console.error('Failed to save audit ledger to disk', err);
+    if (!this.supabase) {
+      try {
+        fs.writeFileSync(LEDGER_FILE, JSON.stringify(chainToSave, null, 2), 'utf-8');
+      } catch (err) {
+        console.error('Failed to save audit ledger to disk', err);
+      }
+      return;
     }
 
-    if (this.supabase && this.supabaseReady) {
+    if (this.supabaseReady) {
       this.pendingWrite = true;
       this.pushToSupabase(chainToSave)
         .then(() => {

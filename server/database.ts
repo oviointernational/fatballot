@@ -72,11 +72,15 @@ export class Database {
   private autoRefreshTimer: NodeJS.Timeout | null = null;
 
   constructor() {
-    this.ensureDataDir();
-    this.data = this.loadData();
-    if (hasSupabase()) {
+    const usingSupabase = hasSupabase();
+    if (usingSupabase) {
       this.supabase = getSupabase();
+    } else {
+      // Local/dev mode: disk-backed store. On a read-only filesystem (Vercel
+      // serverless) Supabase must be configured, so disk access is skipped.
+      this.ensureDataDir();
     }
+    this.data = this.loadData();
   }
 
   // Loads (or seeds) the store from Supabase. Must be awaited before serving
@@ -133,8 +137,13 @@ export class Database {
   }
 
   private ensureDataDir() {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
+    try {
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+    } catch (err) {
+      // Read-only filesystem (serverless) — Supabase handles persistence.
+      console.warn('Local data dir unavailable, using Supabase only:', (err as Error).message);
     }
   }
 
@@ -165,29 +174,37 @@ export class Database {
   }
 
   private loadData(): StoreData {
-    try {
-      if (fs.existsSync(STORE_FILE)) {
-        const raw = fs.readFileSync(STORE_FILE, 'utf-8');
-        const parsed = JSON.parse(raw);
-        return this.normalizeStore(parsed);
+    // Supabase is the source of truth; init() pulls the real data. Skip disk.
+    if (!this.supabase) {
+      try {
+        if (fs.existsSync(STORE_FILE)) {
+          const raw = fs.readFileSync(STORE_FILE, 'utf-8');
+          const parsed = JSON.parse(raw);
+          return this.normalizeStore(parsed);
+        }
+      } catch (err) {
+        console.error('Error loading store file, falling back to defaults:', err);
       }
-    } catch (err) {
-      console.error('Error loading store file, falling back to defaults:', err);
     }
 
     const defaultData = this.normalizeStore({});
-    this.saveData(defaultData);
+    if (!this.supabase) {
+      this.saveData(defaultData);
+    }
     return defaultData;
   }
 
   private saveData(dataToSave: StoreData = this.data) {
-    try {
-      fs.writeFileSync(STORE_FILE, JSON.stringify(dataToSave, null, 2), 'utf-8');
-    } catch (err) {
-      console.error('Error saving store to disk:', err);
+    if (!this.supabase) {
+      try {
+        fs.writeFileSync(STORE_FILE, JSON.stringify(dataToSave, null, 2), 'utf-8');
+      } catch (err) {
+        console.error('Error saving store to disk:', err);
+      }
+      return;
     }
 
-    if (this.supabase && this.supabaseReady) {
+    if (this.supabaseReady) {
       this.pendingWrite = true;
       this.pushToSupabase(dataToSave)
         .then(() => {
