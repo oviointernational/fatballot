@@ -1,13 +1,13 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { db } from './database';
 import { auditLedger, AuditActor } from './auditLedger';
 
 const app = express();
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FRONTEND_DIR = path.join(__dirname, '..', 'dist');
+// FRONTEND_DIR must resolve identically under both ESM and CommonJS bundles
+// (import.meta.url is undefined in CJS), so derive it from the process cwd.
+const FRONTEND_DIR = path.join(process.cwd(), 'dist');
 
 // Firebase web API key used to verify passwordless sign-in ID tokens server-side
 const FIREBASE_API_KEY = 'AIzaSyDBzRlGJfUZXU86t5xMg1Q18rdjBbXzsEA';
