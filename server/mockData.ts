@@ -38,6 +38,9 @@ export interface Voter {
   phone?: string;
   avatar?: string;
   registeredAt: string;
+  // scrypt password hash for RA-number + password sign-in.
+  // NEVER sent to clients (stripped at every API boundary).
+  passwordHash?: string;
 }
 
 export interface ScreeningCriteria {

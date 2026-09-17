@@ -17,22 +17,6 @@ export function getSupabase(): SupabaseClient {
   });
 }
 
-// Dedicated client for Supabase Auth OTP (email 6-digit codes). Prefers the
-// anon key — the public Auth endpoints accept it and it carries no table
-// privileges — falling back to the service-role key when that is all that
-// is configured. ALL Supabase calls stay server-side: the browser never sees
-// any key (the blob store has no RLS, so the key must not ship to clients).
-export function getSupabaseAuthClient(): SupabaseClient {
-  const url = process.env.SUPABASE_URL || 'https://gavjqssxqfzbpniammrm.supabase.co';
-  const key =
-    process.env.SUPABASE_ANON_KEY ||
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    '';
-  return createClient(url, key, {
-    auth: { persistSession: false, autoRefreshToken: false }
-  });
-}
-
 // In production a persistent store is mandatory; fail loudly instead of silently losing data.
 export function ensureSupabaseOrThrow(serviceName: string) {
   if (process.env.NODE_ENV === 'production' && !hasSupabase()) {

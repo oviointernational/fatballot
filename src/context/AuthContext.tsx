@@ -1,18 +1,14 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { Voter } from '../types';
 
-// Supabase is used server-side only (persistence + email OTP delivery).
-// The browser never talks to Supabase directly and holds no Supabase keys.
-// This export is kept only if downstream code references it.
+// Authentication is fully self-contained: RA number + password verified by
+// our own server (scrypt hashes). No Firebase, no email codes, no external
+// auth service — the browser only ever talks to /api.
 export const supa = null;
 
 interface AuthResult {
   success: boolean;
   message: string;
-  maskedEmail?: string;
-  voterName?: string;
-  /** DEV-ONLY: returned when no email service is configured locally. */
-  devCode?: string;
 }
 
 interface AuthContextType {
@@ -22,12 +18,12 @@ interface AuthContextType {
   supersededError: string | null;
   setupRequired: boolean;
   refreshSetupStatus: () => Promise<void>;
-  /** Step 1: enter RA number -> a 6-digit code is emailed to the registered address. */
-  requestLoginCode: (raNumber: string) => Promise<AuthResult>;
-  /** Step 2: enter the emailed 6-digit code -> signed in (7-day single-device session). */
-  verifyLoginCode: (raNumber: string, code: string) => Promise<AuthResult>;
-  /** First-to-register: claims the Superadmin seat, then starts the code flow. */
-  setupSuperadmin: (profile: { email: string; firstName: string; lastName: string }) => Promise<AuthResult>;
+  /** Sign in with RA number + password (7-day single-device session). */
+  login: (raNumber: string, password: string) => Promise<AuthResult>;
+  /** Change own password while signed in. */
+  changePassword: (currentPassword: string, newPassword: string) => Promise<AuthResult>;
+  /** First-to-register: claims the Superadmin seat and signs in. */
+  setupSuperadmin: (profile: { email: string; firstName: string; lastName: string; password: string }) => Promise<AuthResult>;
   logout: () => Promise<void>;
   clearSupersededError: () => void;
   quickLogin: (raNumber: string) => Promise<boolean>;
@@ -143,53 +139,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setSupersededError(null);
   };
 
-  const requestLoginCode = async (raNumber: string): Promise<AuthResult> => {
+  const login = async (raNumber: string, password: string): Promise<AuthResult> => {
     const cleanRA = raNumber.replace(/^RA-?/i, '').trim();
     if (!cleanRA) {
       return { success: false, message: 'Please enter your RA Number.' };
     }
+    if (!password) {
+      return { success: false, message: 'Please enter your password.' };
+    }
     try {
-      const res = await fetch('/api/auth/request-code', {
+      const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ raNumber: cleanRA, deviceInfo: navigator.userAgent })
+        body: JSON.stringify({ raNumber: cleanRA, password, deviceInfo: navigator.userAgent })
       });
       const read = await readApiResponse(res);
       if (!read.data) {
         return { success: false, message: platformErrorMessage(read) };
       }
       if (!read.ok) {
-        return { success: false, message: read.data.message || 'Could not send login code.' };
-      }
-      return {
-        success: true,
-        message: read.data.message,
-        maskedEmail: read.data.maskedEmail,
-        voterName: read.data.voterName,
-        devCode: read.data.devCode
-      };
-    } catch (err: any) {
-      return { success: false, message: err.message || 'Network error occurred.' };
-    }
-  };
-
-  const verifyLoginCode = async (raNumber: string, code: string): Promise<AuthResult> => {
-    const cleanRA = raNumber.replace(/^RA-?/i, '').trim();
-    if (!/^\d{6}$/.test(code.trim())) {
-      return { success: false, message: 'Please enter the 6-digit code sent to your email.' };
-    }
-    try {
-      const res = await fetch('/api/auth/verify-code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ raNumber: cleanRA, code: code.trim(), deviceInfo: navigator.userAgent })
-      });
-      const read = await readApiResponse(res);
-      if (!read.data) {
-        return { success: false, message: platformErrorMessage(read) };
-      }
-      if (!read.ok) {
-        return { success: false, message: read.data.message || 'Verification failed.' };
+        return { success: false, message: read.data.message || 'Sign-in failed.' };
       }
       applySession(read.data);
       return { success: true, message: 'Signed in successfully.' };
@@ -198,12 +167,44 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // First-to-register: claims the Superadmin seat on a fresh system, then
-  // immediately requests the login code for RA-1001. Single-use by design.
-  const setupSuperadmin = async (profile: { email: string; firstName: string; lastName: string }): Promise<AuthResult> => {
+  const changePassword = async (currentPassword: string, newPassword: string): Promise<AuthResult> => {
+    if (!currentPassword || !newPassword) {
+      return { success: false, message: 'Please fill in both password fields.' };
+    }
+    if (newPassword.length < 6) {
+      return { success: false, message: 'New password must be at least 6 characters.' };
+    }
+    try {
+      const res = await fetch('/api/auth/change-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-session-token': sessionToken || ''
+        },
+        body: JSON.stringify({ currentPassword, newPassword })
+      });
+      const read = await readApiResponse(res);
+      if (!read.data) {
+        return { success: false, message: platformErrorMessage(read) };
+      }
+      if (!read.ok) {
+        return { success: false, message: read.data.message || 'Could not change password.' };
+      }
+      return { success: true, message: 'Password changed successfully.' };
+    } catch (err: any) {
+      return { success: false, message: err.message || 'Network error occurred.' };
+    }
+  };
+
+  // First-to-register: claims the Superadmin seat on a fresh system and signs
+  // straight in with the just-set password. Single-use by design.
+  const setupSuperadmin = async (profile: { email: string; firstName: string; lastName: string; password: string }): Promise<AuthResult> => {
     const cleanEmail = profile.email.trim().toLowerCase();
-    if (!cleanEmail || !profile.firstName.trim() || !profile.lastName.trim()) {
+    if (!cleanEmail || !profile.firstName.trim() || !profile.lastName.trim() || !profile.password) {
       return { success: false, message: 'Please complete all fields.' };
+    }
+    if (profile.password.length < 6) {
+      return { success: false, message: 'Password must be at least 6 characters.' };
     }
     try {
       const res = await fetch('/api/auth/setup-superadmin', {
@@ -212,7 +213,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         body: JSON.stringify({
           email: cleanEmail,
           firstName: profile.firstName.trim(),
-          lastName: profile.lastName.trim()
+          lastName: profile.lastName.trim(),
+          password: profile.password
         })
       });
       const read = await readApiResponse(res);
@@ -222,12 +224,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!read.ok) {
         return { success: false, message: read.data.message || 'Setup failed.' };
       }
+      applySession(read.data);
       await refreshSetupStatus();
-      const codeRes = await requestLoginCode(read.data.voter.raNumber);
-      if (!codeRes.success) {
-        return { success: false, message: `Seat claimed for ${cleanEmail}, but the login code could not be sent: ${codeRes.message}` };
-      }
-      return { ...codeRes, message: `Superadmin seat claimed. ${codeRes.message}` };
+      return { success: true, message: 'Superadmin seat claimed. You are signed in.' };
     } catch (err: any) {
       return { success: false, message: err.message || 'Setup failed.' };
     }
@@ -238,7 +237,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // DISABLED in production builds — the server also rejects it there.
   const quickLogin = async (raNumber: string) => {
     if (import.meta.env.PROD) {
-      alert('Quick login is disabled in production. Please sign in with your RA Number and emailed code.');
+      alert('Quick login is disabled in production. Please sign in with your RA Number and password.');
       return false;
     }
     try {
@@ -295,8 +294,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         supersededError,
         setupRequired,
         refreshSetupStatus,
-        requestLoginCode,
-        verifyLoginCode,
+        login,
+        changePassword,
         setupSuperadmin,
         logout,
         clearSupersededError,

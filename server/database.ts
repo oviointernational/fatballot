@@ -45,20 +45,6 @@ export interface MagicLinkRequest {
   used: boolean;
 }
 
-// One-time 6-digit login code challenge. The code itself is generated and
-// emailed by Supabase Auth (signInWithOtp); this record only binds the
-// challenge to the voter's RA number, throttles re-requests and caps
-// verification attempts. devCodeHash is DEV-ONLY (no Supabase configured):
-// a locally generated code whose sha256 is stored for offline testing.
-export interface OtpChallenge {
-  email: string;
-  raNumber: string;
-  createdAt: string;
-  expiresAt: string;
-  attempts: number;
-  devCodeHash?: string;
-}
-
 export interface StoreData {
   settings: SiteSettings;
   offices: Office[];
@@ -69,7 +55,6 @@ export interface StoreData {
   votes: CastVote[];
   sessions: UserSession[];
   magicLinks: MagicLinkRequest[];
-  otpChallenges: OtpChallenge[];
   screeningCriteria: ScreeningCriteria[];
   candidateScreenings: CandidateScreening[];
   agents: ElectionAgent[];
@@ -185,7 +170,6 @@ export class Database {
       votes: parsed.votes ?? [...initialVotes],
       sessions: parsed.sessions ?? [],
       magicLinks: parsed.magicLinks ?? [],
-      otpChallenges: parsed.otpChallenges ?? [],
       screeningCriteria: parsed.screeningCriteria ?? [...initialScreeningCriteria],
       candidateScreenings: parsed.candidateScreenings ?? [],
       agents: parsed.agents ?? [...initialAgents],
@@ -903,50 +887,43 @@ export class Database {
     });
   }
 
-  // --- OTP login challenges (RA number -> emailed 6-digit code) ---
-  public createOtpChallenge(email: string, raNumber: string, devCodeHash?: string): OtpChallenge {
-    const cleanRA = raNumber.replace(/^RA-?/i, '').trim();
-    const cleanEmail = email.trim().toLowerCase();
-    // One active challenge per email; a re-request replaces the previous one.
-    this.data.otpChallenges = this.data.otpChallenges.filter(c => c.email !== cleanEmail);
-    const challenge: OtpChallenge = {
-      email: cleanEmail,
-      raNumber: cleanRA,
-      createdAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(), // 15 mins
-      attempts: 0,
-      ...(devCodeHash ? { devCodeHash } : {})
-    };
-    this.data.otpChallenges.push(challenge);
-    this.saveData();
-    return challenge;
+  // --- Passwords (RA number + password sign-in, fully self-contained) ---
+  // scrypt hashes; no external service involved. publicVoter() strips the
+  // hash at every API boundary so it never reaches a client.
+  public hashPassword(password: string): string {
+    const salt = crypto.randomBytes(16).toString('hex');
+    const derived = crypto.scryptSync(password, salt, 64).toString('hex');
+    return `scrypt$16384$8$1$${salt}$${derived}`;
   }
 
-  public getOtpChallengeByRa(raNumber: string): OtpChallenge | undefined {
-    const cleanRA = raNumber.replace(/^RA-?/i, '').trim();
-    const found = this.data.otpChallenges.find(c => c.raNumber === cleanRA);
-    if (!found) return undefined;
-    if (new Date(found.expiresAt).getTime() < Date.now()) {
-      this.consumeOtpChallenge(found.email);
-      return undefined;
+  public verifyPassword(storedHash: string, password: string): boolean {
+    try {
+      const parts = storedHash.split('$');
+      if (parts.length !== 6 || parts[0] !== 'scrypt') return false;
+      const [, n, r, p, salt, expected] = parts;
+      const derived = crypto.scryptSync(password, salt, 64, {
+        N: parseInt(n, 10),
+        r: parseInt(r, 10),
+        p: parseInt(p, 10)
+      }).toString('hex');
+      const a = Buffer.from(derived, 'hex');
+      const b = Buffer.from(expected, 'hex');
+      return a.length === b.length && crypto.timingSafeEqual(a, b);
+    } catch {
+      return false;
     }
-    return found;
   }
 
-  public bumpOtpAttempts(email: string): OtpChallenge | undefined {
-    const cleanEmail = email.trim().toLowerCase();
-    const found = this.data.otpChallenges.find(c => c.email === cleanEmail);
-    if (found) {
-      found.attempts += 1;
-      this.saveData();
+  public setVoterPassword(id: string, password: string): Voter {
+    if (!password || password.length < 6) {
+      throw new Error('Password must be at least 6 characters.');
     }
-    return found;
+    return this.updateVoter(id, { passwordHash: this.hashPassword(password) });
   }
 
-  public consumeOtpChallenge(email: string) {
-    const cleanEmail = email.trim().toLowerCase();
-    this.data.otpChallenges = this.data.otpChallenges.filter(c => c.email !== cleanEmail);
-    this.saveData();
+  public publicVoter(voter: Voter): Omit<Voter, 'passwordHash'> {
+    const { passwordHash: _dropped, ...pub } = voter;
+    return pub;
   }
 
   // --- Authentication & Single Device Session Management ---

@@ -1,9 +1,8 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import path from 'path';
-import crypto from 'crypto';
 import { db } from './database';
-import { hasSupabase, getSupabaseAuthClient } from './supabase';
+import { hasSupabase } from './supabase';
 import { auditLedger, AuditActor } from './auditLedger';
 
 const app = express();
@@ -13,10 +12,6 @@ const FRONTEND_DIR = path.join(process.cwd(), 'dist');
 
 function isProduction(): boolean {
   return process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL);
-}
-
-function maskEmail(email: string): string {
-  return email.replace(/(.{2})(.*)(?=@)/, '$1***');
 }
 
 app.use(cors());
@@ -268,7 +263,7 @@ app.post('/api/offices/assign', requireAuth, requirePermission('assignOffices'),
       candidateId: result.candidate.id
     });
     broadcastLiveResults();
-    res.json(result);
+    res.json({ voter: db.publicVoter(result.voter), candidate: result.candidate });
   } catch (err: any) {
     res.status(400).json({ error: 'ASSIGN_FAILED', message: err.message });
   }
@@ -292,7 +287,7 @@ app.post('/api/offices/unassign', requireAuth, requirePermission('assignOffices'
       role: req.voter.role
     }, { voterRA: voter.raNumber });
     broadcastLiveResults();
-    res.json({ success: true, voter });
+    res.json({ success: true, voter: db.publicVoter(voter) });
   } catch (err: any) {
     res.status(400).json({ error: 'UNASSIGN_FAILED', message: err.message });
   }
@@ -330,13 +325,16 @@ app.post('/api/voters', requireAuth, requirePermission('registerUsers'), (req: A
     return res.status(403).json({ error: 'FORBIDDEN', message: 'Committee member access required to register voters.' });
   }
 
-  const { email, firstName, middleName, lastName, raNumber, role, department, phone } = req.body;
+  const { email, firstName, middleName, lastName, raNumber, role, department, phone, password } = req.body;
   if (!email || !firstName || !lastName || !raNumber) {
     return res.status(400).json({ error: 'MISSING_FIELDS', message: 'First name, last name, email, and RA number are required.' });
   }
+  if (!password || String(password).length < 6) {
+    return res.status(400).json({ error: 'WEAK_PASSWORD', message: 'Set an initial password of at least 6 characters for the voter and share it with them securely.' });
+  }
 
   try {
-    const newVoter = db.addVoter({
+    const created = db.addVoter({
       email,
       firstName,
       middleName,
@@ -346,6 +344,7 @@ app.post('/api/voters', requireAuth, requirePermission('registerUsers'), (req: A
       department,
       phone
     });
+    const newVoter = db.setVoterPassword(created.id, String(password));
 
     auditLedger.recordEvent('VOTER_REGISTERED', {
       raNumber: req.voter.raNumber,
@@ -357,7 +356,7 @@ app.post('/api/voters', requireAuth, requirePermission('registerUsers'), (req: A
       newVoterName: `${newVoter.firstName} ${newVoter.lastName}`
     });
 
-    res.status(201).json(newVoter);
+    res.status(201).json(db.publicVoter(newVoter));
   } catch (err: any) {
     res.status(400).json({ error: 'REGISTRATION_FAILED', message: err.message });
   }
@@ -426,7 +425,7 @@ app.put('/api/voters/:id', requireAuth, requirePermission('registerUsers'), (req
       voterName: `${updated.firstName} ${updated.lastName}`,
       updatedFields: Object.keys(updates)
     });
-    res.json(updated);
+    res.json(db.publicVoter(updated));
   } catch (err: any) {
     res.status(400).json({ error: 'UPDATE_FAILED', message: err.message });
   }
@@ -450,7 +449,7 @@ app.put('/api/voters/:id/accredit', requireAuth, requirePermission('accreditUser
       voterName: `${updated.firstName} ${updated.lastName}`,
       isAccredited
     });
-    res.json(updated);
+    res.json(db.publicVoter(updated));
   } catch (err: any) {
     res.status(400).json({ error: 'ACCREDITATION_FAILED', message: err.message });
   }
@@ -484,7 +483,7 @@ app.delete('/api/voters/:id', requireAuth, requirePermission('registerUsers'), (
 // COMMITTEE ADMIN MANAGEMENT
 // ----------------------------------------------------
 app.get('/api/committee-admins', requireAuth, (_req: Request, res: Response) => {
-  res.json(db.getCommitteeAdmins());
+  res.json(db.getCommitteeAdmins().map(v => db.publicVoter(v)));
 });
 
 app.post('/api/committee-admins', requireAuth, (req: AuthenticatedRequest, res: Response) => {
@@ -526,7 +525,7 @@ app.delete('/api/committee-admins/:id', requireAuth, (req: AuthenticatedRequest,
       removedRA: updated.raNumber,
       removedName: `${updated.firstName} ${updated.lastName}`
     });
-    res.json({ success: true, voter: updated });
+    res.json({ success: true, voter: db.publicVoter(updated) });
   } catch (err: any) {
     res.status(400).json({ error: 'FAILED', message: err.message });
   }
@@ -565,15 +564,14 @@ app.get('/api/ycec', (_req: Request, res: Response) => {
 });
 
 // ----------------------------------------------------
-// AUTHENTICATION (RA Number + Emailed 6-Digit Code, 7-Day Single Device)
+// AUTHENTICATION (RA Number + Password, 7-Day Single Device)
 // ----------------------------------------------------
 // Registration is CLOSED: nobody can self-register. The electoral roll is
-// built exclusively by staff holding the 'registerUsers' permission, and the
-// very first account — the Superadmin — is claimed once via setup-superadmin
-// on a fresh system. Every voter then signs in with their RA number: the
-// server looks up the email registered to that RA number and dispatches a
-// one-time 6-digit code to it (Supabase Auth email OTP). Sessions last
-// 7 days and are single-device exclusive.
+// built exclusively by staff holding the 'registerUsers' permission, who set
+// each voter's initial password at enrolment. The very first account — the
+// Superadmin — is claimed once via setup-superadmin on a fresh system.
+// Passwords are scrypt-hashed server-side; everything is self-contained,
+// with 7-day single-device-exclusive sessions.
 
 // A fresh system = only the placeholder Superadmin, empty ballot box.
 // Once the seat is claimed (real name + real email), setup closes forever.
@@ -584,7 +582,9 @@ function isFreshSystem(): boolean {
     return false;
   }
   const only = voters[0];
-  return only.role === 'superadmin' && only.email.trim().toLowerCase() === PLACEHOLDER_SUPERADMIN_EMAIL;
+  return only.role === 'superadmin'
+    && only.email.trim().toLowerCase() === PLACEHOLDER_SUPERADMIN_EMAIL
+    && !only.passwordHash;
 }
 
 app.get('/api/auth/setup-status', (_req: Request, res: Response) => {
@@ -601,16 +601,16 @@ app.post('/api/auth/setup-superadmin', (req: Request, res: Response) => {
     });
   }
 
-  const { email, firstName, lastName } = req.body;
+  const { email, firstName, lastName, password } = req.body;
   const cleanEmail = String(email || '').trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
     return res.status(400).json({ error: 'INVALID_EMAIL', message: 'Please provide a valid email address.' });
   }
-  if (cleanEmail === PLACEHOLDER_SUPERADMIN_EMAIL) {
-    return res.status(400).json({ error: 'PLACEHOLDER_EMAIL', message: 'Please use your real email address — sign-in credentials are issued to it.' });
-  }
   if (!String(firstName || '').trim() || !String(lastName || '').trim()) {
     return res.status(400).json({ error: 'MISSING_FIELDS', message: 'First name and last name are required.' });
+  }
+  if (!password || String(password).length < 6) {
+    return res.status(400).json({ error: 'WEAK_PASSWORD', message: 'Password must be at least 6 characters.' });
   }
 
   const clash = db.getVoterByEmail(cleanEmail);
@@ -627,7 +627,8 @@ app.post('/api/auth/setup-superadmin', (req: Request, res: Response) => {
     firstName: String(firstName).trim(),
     lastName: String(lastName).trim(),
     isAccredited: true,
-    role: 'superadmin'
+    role: 'superadmin',
+    passwordHash: db.hashPassword(String(password))
   });
 
   auditLedger.recordEvent('SUPERADMIN_SETUP', {
@@ -637,54 +638,27 @@ app.post('/api/auth/setup-superadmin', (req: Request, res: Response) => {
     role: 'superadmin'
   }, { ip: req.ip });
 
+  // Log the new Superadmin straight in with the just-set password.
+  const sessionToken = db.createExclusiveSession(updated, req.headers['user-agent']);
+
   res.status(201).json({
     success: true,
-    voter: {
-      id: updated.id,
-      raNumber: updated.raNumber,
-      email: updated.email,
-      firstName: updated.firstName,
-      lastName: updated.lastName,
-      role: updated.role
-    }
+    sessionToken,
+    voter: db.publicVoter(updated)
   });
 });
 
-// Gate for account activation: only emails already enrolled on the
-// electoral roll may receive a login code. Unknown emails are denied.
-// (Kept for compatibility; the RA-number flow below is the primary gate.)
-app.post('/api/auth/request-activation', (req: Request, res: Response) => {
-  const { email } = req.body;
-  const cleanEmail = String(email || '').trim().toLowerCase();
-  if (!cleanEmail) {
-    return res.status(400).json({ error: 'EMAIL_REQUIRED', message: 'Please enter your email address.' });
-  }
-
-  const voter = db.getVoterByEmail(cleanEmail);
-  if (!voter) {
-    return res.status(404).json({
-      error: 'NOT_REGISTERED',
-      message: 'Access Denied. This email is not on the electoral roll. Contact the Electoral Committee to be enrolled.'
-    });
-  }
-
-  res.json({
-    success: true,
-    voterName: `${voter.firstName} ${voter.lastName}`,
-    raNumber: voter.raNumber,
-    maskedEmail: maskEmail(voter.email)
-  });
-});
-
-// RA number -> emailed 6-digit code (Supabase Auth OTP).
-// The voter enters their RA number; the server looks up the email address
-// registered to that RA number and dispatches a one-time numeric code to it.
-// Entering the code signs the voter in with an exclusive 7-day session.
-app.post('/api/auth/request-code', async (req: Request, res: Response) => {
-  const { raNumber } = req.body;
+// RA number + password sign-in. Fully self-contained: the password hash is
+// verified locally with scrypt — no email, no codes, no external service.
+// Success issues the exclusive 7-day single-device session.
+app.post('/api/auth/login', (req: Request, res: Response) => {
+  const { raNumber, password, deviceInfo } = req.body;
   const cleanRA = String(raNumber || '').replace(/^RA-?/i, '').trim();
   if (!cleanRA) {
     return res.status(400).json({ error: 'RA_REQUIRED', message: 'Please enter your RA Number.' });
+  }
+  if (!password) {
+    return res.status(400).json({ error: 'PASSWORD_REQUIRED', message: 'Please enter your password.' });
   }
 
   const voter = db.getVoterByRA(cleanRA);
@@ -694,142 +668,25 @@ app.post('/api/auth/request-code', async (req: Request, res: Response) => {
       message: `Access Denied. No voter found with RA Number ${cleanRA}. Please contact the Electoral Committee.`
     });
   }
-
-  // Throttle: one code per 60 seconds per voter (protects the email quota).
-  const existing = db.getOtpChallengeByRa(cleanRA);
-  if (existing && new Date(existing.createdAt).getTime() > Date.now() - 60 * 1000) {
-    return res.status(429).json({
-      error: 'CODE_ALREADY_SENT',
-      message: `A code was already sent to ${maskEmail(voter.email)}. Please check your inbox and wait a minute before requesting another.`,
-      maskedEmail: maskEmail(voter.email)
-    });
-  }
-
-  // Deliver the code via Supabase Auth email OTP. Only voters on the roll
-  // ever reach this point, so no Supabase account can be minted for strangers.
-  if (hasSupabase()) {
-    try {
-      const sb = getSupabaseAuthClient();
-      const { error } = await sb.auth.signInWithOtp({ email: voter.email });
-      if (error) throw new Error(error.message);
-      db.createOtpChallenge(voter.email, voter.raNumber);
-    } catch (err: any) {
-      if (isProduction()) {
-        return res.status(502).json({
-          error: 'EMAIL_SEND_FAILED',
-          message: 'Could not dispatch the login code. Please try again shortly.'
-        });
-      }
-      // Dev fallback below (no email service reachable locally).
-    }
-  }
-
-  // DEV-ONLY fallback: with no Supabase configured locally there is no email
-  // service, so a code is generated in-process and returned in the response
-  // for testing. Never active in production.
-  let devCode: string | undefined;
-  if (!hasSupabase() && !isProduction()) {
-    devCode = String(Math.floor(100000 + Math.random() * 900000));
-    const devCodeHash = crypto.createHash('sha256').update(devCode).digest('hex');
-    db.createOtpChallenge(voter.email, voter.raNumber, devCodeHash);
-  } else if (!hasSupabase() && isProduction()) {
-    return res.status(503).json({
-      error: 'AUTH_UNAVAILABLE',
-      message: 'Email sign-in is not configured on the server. Contact the Electoral Committee.'
-    });
-  }
-
-  // If Supabase delivery succeeded, the challenge was already recorded above.
-  // If it threw in dev, record a dev challenge so verification still works.
-  if (hasSupabase() && !isProduction() && !db.getOtpChallengeByRa(cleanRA)) {
-    devCode = String(Math.floor(100000 + Math.random() * 900000));
-    const devCodeHash = crypto.createHash('sha256').update(devCode).digest('hex');
-    db.createOtpChallenge(voter.email, voter.raNumber, devCodeHash);
-  }
-
-  auditLedger.recordEvent('AUTH_CODE_REQUESTED', {
-    raNumber: voter.raNumber,
-    email: voter.email,
-    name: `${voter.firstName} ${voter.lastName}`
-  }, { ip: req.ip });
-
-  res.json({
-    success: true,
-    message: `A 6-digit login code was sent to ${maskEmail(voter.email)}. It expires in 15 minutes.`,
-    maskedEmail: maskEmail(voter.email),
-    voterName: `${voter.firstName} ${voter.lastName}`,
-    ...(devCode ? { devCode } : {})
-  });
-});
-
-// Verifies the emailed 6-digit code and issues the exclusive 7-day session.
-// Max 5 attempts per code; a login elsewhere instantly ends this session.
-app.post('/api/auth/verify-code', async (req: Request, res: Response) => {
-  const { raNumber, code, deviceInfo } = req.body;
-  const cleanRA = String(raNumber || '').replace(/^RA-?/i, '').trim();
-  const cleanCode = String(code || '').trim();
-  if (!cleanRA || !/^\d{6}$/.test(cleanCode)) {
-    return res.status(400).json({ error: 'INVALID_CODE', message: 'Please enter the 6-digit code sent to your email.' });
-  }
-
-  const challenge = db.getOtpChallengeByRa(cleanRA);
-  if (!challenge) {
-    return res.status(401).json({
-      error: 'NO_CHALLENGE',
-      message: 'No active login code for this RA Number. Please request a new code.'
-    });
-  }
-  if (challenge.attempts >= 5) {
-    db.consumeOtpChallenge(challenge.email);
-    return res.status(429).json({
-      error: 'TOO_MANY_ATTEMPTS',
-      message: 'Too many wrong attempts. Please request a new code.'
-    });
-  }
-
-  let verifiedEmail: string | null = null;
-  if (challenge.devCodeHash && !isProduction()) {
-    // DEV-ONLY verification path (see request-code).
-    const hash = crypto.createHash('sha256').update(cleanCode).digest('hex');
-    if (hash === challenge.devCodeHash) verifiedEmail = challenge.email;
-  } else {
-    try {
-      const sb = getSupabaseAuthClient();
-      const { data, error } = await sb.auth.verifyOtp({
-        email: challenge.email,
-        token: cleanCode,
-        type: 'email'
-      });
-      if (error || !data.user) throw new Error(error?.message || 'Verification failed.');
-      verifiedEmail = (data.user.email || '').trim().toLowerCase();
-    } catch (err: any) {
-      db.bumpOtpAttempts(challenge.email);
-      return res.status(401).json({
-        error: 'INVALID_CODE',
-        message: 'Incorrect or expired code. Please check and try again.'
-      });
-    }
-  }
-
-  if (!verifiedEmail) {
-    db.bumpOtpAttempts(challenge.email);
-    return res.status(401).json({
-      error: 'INVALID_CODE',
-      message: 'Incorrect or expired code. Please check and try again.'
-    });
-  }
-
-  // The verified email must still belong to the challenged voter on the roll.
-  const voter = db.getVoterByEmail(verifiedEmail);
-  if (!voter || voter.raNumber.replace(/^RA-?/i, '').trim() !== challenge.raNumber) {
-    db.consumeOtpChallenge(challenge.email);
+  if (!voter.passwordHash) {
     return res.status(403).json({
-      error: 'ACCESS_DENIED',
-      message: 'Access Denied. This credential is not on the electoral roll.'
+      error: 'PASSWORD_NOT_SET',
+      message: 'No password has been set for this account yet. Please ask your Electoral Committee officer to set one for you.'
     });
   }
 
-  db.consumeOtpChallenge(challenge.email);
+  const ok = db.verifyPassword(voter.passwordHash, String(password));
+  if (!ok) {
+    // Small uniform delay blunts online guessing; message stays generic.
+    setTimeout(() => {
+      res.status(401).json({
+        error: 'INVALID_CREDENTIALS',
+        message: 'Incorrect RA Number or password. Please check and try again.'
+      });
+    }, 400);
+    return;
+  }
+
   const sessionToken = db.createExclusiveSession(voter, deviceInfo || req.headers['user-agent']);
 
   auditLedger.recordEvent('AUTH_LOGIN_SUCCESS', {
@@ -838,7 +695,7 @@ app.post('/api/auth/verify-code', async (req: Request, res: Response) => {
     name: `${voter.firstName} ${voter.lastName}`,
     role: voter.role
   }, {
-    provider: challenge.devCodeHash ? 'dev-code' : 'supabase-email-otp',
+    provider: 'ra-password',
     deviceInfo: deviceInfo || req.headers['user-agent'],
     ip: req.ip,
     singleDeviceEnforced: true,
@@ -848,31 +705,80 @@ app.post('/api/auth/verify-code', async (req: Request, res: Response) => {
   res.json({
     success: true,
     sessionToken,
-    voter: {
-      id: voter.id,
-      raNumber: voter.raNumber,
-      email: voter.email,
-      firstName: voter.firstName,
-      middleName: voter.middleName,
-      lastName: voter.lastName,
-      role: voter.role,
-      isAccredited: voter.isAccredited,
-      department: voter.department,
-      phone: voter.phone,
-      avatar: voter.avatar
-    }
+    voter: db.publicVoter(voter)
   });
+});
+
+// Change own password (authenticated).
+app.post('/api/auth/change-password', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const { currentPassword, newPassword } = req.body;
+  const voter = req.voter!;
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: 'MISSING_FIELDS', message: 'Current and new passwords are required.' });
+  }
+  if (String(newPassword).length < 6) {
+    return res.status(400).json({ error: 'WEAK_PASSWORD', message: 'New password must be at least 6 characters.' });
+  }
+  if (!voter.passwordHash || !db.verifyPassword(voter.passwordHash, String(currentPassword))) {
+    return res.status(401).json({ error: 'INVALID_CREDENTIALS', message: 'Your current password is incorrect.' });
+  }
+
+  try {
+    const updated = db.setVoterPassword(voter.id, String(newPassword));
+    auditLedger.recordEvent('PASSWORD_CHANGED', {
+      raNumber: updated.raNumber,
+      email: updated.email,
+      name: `${updated.firstName} ${updated.lastName}`,
+      role: updated.role
+    }, { ip: req.ip });
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ error: 'UPDATE_FAILED', message: err.message });
+  }
+});
+
+// Reset a voter's password (committee staff holding the registerUsers grant;
+// Superadmin always allowed). Used when a voter forgets their password.
+app.post('/api/auth/reset-password', requireAuth, requirePermission('registerUsers'), (req: AuthenticatedRequest, res: Response) => {
+  if (req.voter?.role !== 'superadmin' && req.voter?.role !== 'committee') {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'Committee member access required.' });
+  }
+
+  const { voterId, newPassword } = req.body;
+  if (!voterId || !newPassword) {
+    return res.status(400).json({ error: 'MISSING_FIELDS', message: 'Voter and new password are required.' });
+  }
+  const target = db.getVoterById(String(voterId));
+  if (!target) {
+    return res.status(404).json({ error: 'NOT_FOUND', message: 'Voter not found.' });
+  }
+
+  try {
+    const updated = db.setVoterPassword(target.id, String(newPassword));
+    auditLedger.recordEvent('PASSWORD_RESET', {
+      raNumber: req.voter!.raNumber,
+      name: `${req.voter!.firstName} ${req.voter!.lastName}`,
+      role: req.voter!.role
+    }, {
+      voterRA: updated.raNumber,
+      voterName: `${updated.firstName} ${updated.lastName}`,
+      ip: req.ip
+    });
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ error: 'UPDATE_FAILED', message: err.message });
+  }
 });
 
 // Dev / testing shortcut: creates an exclusive session directly for an RA number.
 // Powers the quick-login buttons in AdminPage.
-// DISABLED in production — the emailed 6-digit code is the only gate.
+// DISABLED in production — RA-number + password sign-in is the only gate.
 app.post('/api/auth/dev-login', (req: Request, res: Response) => {
   const isProd = process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL);
   if (isProd) {
     return res.status(403).json({
       error: 'DEV_LOGIN_DISABLED',
-      message: 'Quick login is disabled in production. Please sign in with your RA Number and emailed code.'
+      message: 'Quick login is disabled in production. Please sign in with your RA Number and password.'
     });
   }
 
@@ -904,24 +810,12 @@ app.post('/api/auth/dev-login', (req: Request, res: Response) => {
   res.json({
     success: true,
     sessionToken,
-    voter: {
-      id: voter.id,
-      raNumber: voter.raNumber,
-      email: voter.email,
-      firstName: voter.firstName,
-      middleName: voter.middleName,
-      lastName: voter.lastName,
-      role: voter.role,
-      isAccredited: voter.isAccredited,
-      department: voter.department,
-      phone: voter.phone,
-      avatar: voter.avatar
-    }
+    voter: db.publicVoter(voter)
   });
 });
 
 app.get('/api/auth/me', requireAuth, (req: AuthenticatedRequest, res: Response) => {
-  res.json(req.voter);
+  res.json(db.publicVoter(req.voter!));
 });
 
 app.post('/api/auth/logout', requireAuth, (req: AuthenticatedRequest, res: Response) => {
@@ -1020,7 +914,10 @@ app.get('/api/votes/candidate-voters/:candidateId', requireAuth, (req: Authentic
   }
 
   const cId = Array.isArray(req.params.candidateId) ? req.params.candidateId[0] : req.params.candidateId;
-  const candidateVoters = db.getCandidateVoters(cId);
+  const candidateVoters = db.getCandidateVoters(cId).map(item => ({
+    voter: db.publicVoter(item.voter),
+    timestamp: item.timestamp
+  }));
   res.json(candidateVoters);
 });
 

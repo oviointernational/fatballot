@@ -66,10 +66,12 @@ function formatEventTitle(block: AuditBlock): string {
       return "Committee: Status → Admin Removed";
     case "PDF_EXPORTED":
       return "Export: Status → PDF Generated";
-    case "AUTH_CODE_REQUESTED":
-      return "Sign-In: Status → Login Code Sent";
     case "AUTH_ACTIVATION_REQUESTED":
       return "Sign-In: Status → Account Activated";
+    case "PASSWORD_CHANGED":
+      return "Security: Status → Password Changed";
+    case "PASSWORD_RESET":
+      return "Security: Status → Password Reset by Committee";
     case "AUTH_LOGIN_SUCCESS":
       return "Sign-In: Status → Authenticated";
     case "AUTH_LOGOUT":
@@ -109,7 +111,7 @@ function formatOptionalDetail(block: AuditBlock): string | null {
 }
 
 export const ProfilePage: React.FC<{ onNavigate: (page: string) => void }> = ({ onNavigate }) => {
-  const { user, sessionToken } = useAuth();
+  const { user, sessionToken, changePassword } = useAuth();
   const { offices, candidates, myVotes, settings } = useElection();
 
   const [myLogs, setMyLogs] = useState<AuditBlock[]>([]);
@@ -118,6 +120,12 @@ export const ProfilePage: React.FC<{ onNavigate: (page: string) => void }> = ({ 
   const [exportingMyVotes, setExportingMyVotes] = useState(false);
   const [exportingCandidateVoters, setExportingCandidateVoters] = useState(false);
   const [expandedLogIndex, setExpandedLogIndex] = useState<number | null>(null);
+  const [currentPw, setCurrentPw] = useState('');
+  const [newPw, setNewPw] = useState('');
+  const [confirmPw, setConfirmPw] = useState('');
+  const [pwError, setPwError] = useState<string | null>(null);
+  const [pwSuccess, setPwSuccess] = useState<string | null>(null);
+  const [changingPw, setChangingPw] = useState(false);
 
   // If user is a contestant, find their candidate profile
   const myCandidateProfile = candidates.find(c => c.raNumber === user?.raNumber);
@@ -171,6 +179,27 @@ export const ProfilePage: React.FC<{ onNavigate: (page: string) => void }> = ({ 
       </div>
     );
   }
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPwError(null);
+    setPwSuccess(null);
+    if (newPw !== confirmPw) {
+      setPwError('New passwords do not match.');
+      return;
+    }
+    setChangingPw(true);
+    const res = await changePassword(currentPw, newPw);
+    setChangingPw(false);
+    if (!res.success) {
+      setPwError(res.message);
+    } else {
+      setPwSuccess(res.message);
+      setCurrentPw('');
+      setNewPw('');
+      setConfirmPw('');
+    }
+  };
 
   const handleExportMyVotes = async () => {
     if (!user) return;
@@ -264,7 +293,74 @@ export const ProfilePage: React.FC<{ onNavigate: (page: string) => void }> = ({ 
         </div>
       </section>
 
-      {/* 2. "Who You Voted For" [List can be exported as PDF] */}
+      {/* 2. Account Security: Change Password */}
+      <section className="bg-white dark:bg-[#0F172A] border border-gray-200 dark:border-[#1E2E4E] rounded-3xl p-6 md:p-8 shadow-sm space-y-4">
+        <div className="border-b border-gray-100 dark:border-[#1E2E4E] pb-4">
+          <h2 className="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
+            <Lock className="w-5 h-5 text-purple-600 dark:text-purple-400" />
+            <span>Account Security</span>
+          </h2>
+          <p className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">
+            Change the password you use with RA-{user.raNumber} to sign in
+          </p>
+        </div>
+
+        {pwError && (
+          <div className="p-3 rounded-2xl bg-red-50 dark:bg-red-950/40 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-900/50 text-xs flex items-center space-x-2">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>{pwError}</span>
+          </div>
+        )}
+        {pwSuccess && (
+          <div className="p-3 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-900/50 text-xs font-semibold">
+            {pwSuccess}
+          </div>
+        )}
+
+        <form onSubmit={handleChangePassword} className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+          <div>
+            <label className="block font-semibold mb-1 text-gray-700 dark:text-slate-300">Current Password</label>
+            <input
+              type="password"
+              required
+              value={currentPw}
+              onChange={(e) => setCurrentPw(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] text-gray-900 dark:text-white outline-none"
+            />
+          </div>
+          <div>
+            <label className="block font-semibold mb-1 text-gray-700 dark:text-slate-300">New Password (min. 6)</label>
+            <input
+              type="password"
+              required
+              value={newPw}
+              onChange={(e) => setNewPw(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] text-gray-900 dark:text-white outline-none"
+            />
+          </div>
+          <div>
+            <label className="block font-semibold mb-1 text-gray-700 dark:text-slate-300">Confirm New Password</label>
+            <input
+              type="password"
+              required
+              value={confirmPw}
+              onChange={(e) => setConfirmPw(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] text-gray-900 dark:text-white outline-none"
+            />
+          </div>
+          <div className="sm:col-span-3">
+            <button
+              type="submit"
+              disabled={changingPw}
+              className="px-5 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold disabled:opacity-60"
+            >
+              {changingPw ? 'Saving...' : 'Change Password'}
+            </button>
+          </div>
+        </form>
+      </section>
+
+      {/* 3. "Who You Voted For" [List can be exported as PDF] */}
       <section className="bg-white dark:bg-[#0F172A] border border-gray-200 dark:border-[#1E2E4E] rounded-3xl p-6 md:p-8 shadow-sm space-y-5">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-100 dark:border-[#1E2E4E] pb-4">
           <div>
@@ -361,7 +457,7 @@ export const ProfilePage: React.FC<{ onNavigate: (page: string) => void }> = ({ 
         )}
       </section>
 
-      {/* 3. Contestant Specific Section: "Those That Voted For You" [PDF exportable] */}
+      {/* 4. Contestant Specific Section: "Those That Voted For You" [PDF exportable] */}
       {myCandidateProfile && (
         <section className="bg-white dark:bg-[#0F172A] border border-gray-200 dark:border-[#1E2E4E] rounded-3xl p-6 md:p-8 shadow-sm space-y-5">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-100 dark:border-[#1E2E4E] pb-4">
@@ -433,7 +529,7 @@ export const ProfilePage: React.FC<{ onNavigate: (page: string) => void }> = ({ 
         </section>
       )}
 
-      {/* 4. Immutable User Security & Activity Log */}
+      {/* 5. Immutable User Security & Activity Log */}
       <section className="bg-white dark:bg-[#0F172A] border border-gray-200 dark:border-[#1E2E4E] rounded-3xl p-6 md:p-8 shadow-sm space-y-4">
         <div className="flex items-center justify-between border-b border-gray-100 dark:border-[#1E2E4E] pb-4">
           <div>

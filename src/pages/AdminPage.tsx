@@ -32,7 +32,8 @@ import {
   X,
   Play,
   Square,
-  Zap
+  Zap,
+  KeyRound
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useElection } from '../context/ElectionContext';
@@ -137,8 +138,14 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
   const [regRole, setRegRole] = useState<'voter' | 'contestant' | 'committee'>('voter');
   const [regDepartment, setRegDepartment] = useState('');
   const [regPhone, setRegPhone] = useState('');
+  const [regPassword, setRegPassword] = useState('');
   const [regError, setRegError] = useState<string | null>(null);
   const [submittingUser, setSubmittingUser] = useState(false);
+
+  // Reset-password state (user detail modal)
+  const [resetPassword, setResetPassword] = useState('');
+  const [resetFeedback, setResetFeedback] = useState<string | null>(null);
+  const [resettingPassword, setResettingPassword] = useState(false);
 
   // Tab 3: Offices
   const [officeSearch, setOfficeSearch] = useState('');
@@ -503,6 +510,38 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
     }
   };
 
+  // Reset a voter's password (forgot-password recovery)
+  const handleResetPassword = async () => {
+    if (!selectedUserForDetail) return;
+    if (!resetPassword || resetPassword.length < 6) {
+      setResetFeedback('New password must be at least 6 characters.');
+      return;
+    }
+    setResettingPassword(true);
+    setResetFeedback(null);
+    try {
+      const res = await fetch('/api/auth/reset-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-session-token': sessionToken || ''
+        },
+        body: JSON.stringify({ voterId: selectedUserForDetail.id, newPassword: resetPassword })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setResetFeedback('Password reset. Share the new password securely with the voter.');
+        setResetPassword('');
+      } else {
+        setResetFeedback(data.message || 'Reset failed.');
+      }
+    } catch (err: any) {
+      setResetFeedback(err.message || 'Network error.');
+    } finally {
+      setResettingPassword(false);
+    }
+  };
+
   // Delete Voter
   const handleDeleteVoter = async (voterId: string) => {    if (!confirm('Are you sure you want to remove this voter? You can re-register them anytime.')) return;
     try {
@@ -528,6 +567,10 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
       setRegError('First name, last name, email, and numeric RA number are required.');
       return;
     }
+    if (!regPassword || regPassword.length < 6) {
+      setRegError('Set an initial password of at least 6 characters and share it securely with the voter.');
+      return;
+    }
 
     setSubmittingUser(true);
     try {
@@ -545,7 +588,8 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
           raNumber: regRaNumber,
           role: regRole,
           department: regDepartment,
-          phone: regPhone
+          phone: regPhone,
+          password: regPassword
         })
       });
 
@@ -560,6 +604,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
         setRegRaNumber('');
         setRegDepartment('');
         setRegPhone('');
+        setRegPassword('');
         refreshAll();
       } else {
         setRegError(data.message || 'Registration failed.');
@@ -1898,9 +1943,21 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                     />
                   </div>
 
+                  <div>
+                    <label className="block font-semibold mb-1">Initial Password (min. 6 characters) *</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Share securely with the voter"
+                      value={regPassword}
+                      onChange={(e) => setRegPassword(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] outline-none font-mono"
+                    />
+                  </div>
+
                   <p className="text-[11px] text-gray-400 italic">
                     Note: Users are not accredited during registration. Accreditation is granted separately.
-                    To sign in, the voter enters their RA Number and a 6-digit code is emailed to this address.
+                    The voter signs in with their RA Number and this password — give it to them securely.
                   </p>
 
                   <div className="flex justify-end space-x-2 pt-2">
@@ -1933,7 +1990,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                     <h3 className="font-extrabold text-base text-gray-900 dark:text-white">User Registry Credentials</h3>
                     <span className="font-mono text-xs text-blue-600 dark:text-blue-400">RA-{selectedUserForDetail.raNumber}</span>
                   </div>
-                  <button onClick={() => { setSelectedUserForDetail(null); setIsEditingUser(false); }} className="text-gray-400 hover:text-gray-600">
+                  <button onClick={() => { setSelectedUserForDetail(null); setIsEditingUser(false); setResetPassword(''); setResetFeedback(null); }} className="text-gray-400 hover:text-gray-600">
                     <X className="w-5 h-5" />
                   </button>
                 </div>
@@ -2046,6 +2103,38 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                       {selectedUserForDetail.isAccredited ? 'Revoke' : 'Accredit'}
                     </button>
                   </div>
+
+                  {/* Password reset control */}
+                  <div className="p-3 bg-amber-50/60 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 rounded-2xl space-y-2">
+                    <div className="flex items-center space-x-2">
+                      <KeyRound className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                      <div>
+                        <span className="font-bold text-gray-900 dark:text-white block">Password Reset</span>
+                        <span className="text-[10px] text-gray-500">
+                          Set a new password when the voter forgets theirs. Share it securely.
+                        </span>
+                      </div>
+                    </div>
+                    {resetFeedback && (
+                      <p className="text-[11px] font-semibold text-gray-700 dark:text-slate-300">{resetFeedback}</p>
+                    )}
+                    <div className="flex space-x-2">
+                      <input
+                        type="text"
+                        placeholder="New password (min. 6)"
+                        value={resetPassword}
+                        onChange={(e) => setResetPassword(e.target.value)}
+                        className="flex-1 px-3 py-1.5 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-white dark:bg-[#0F172A] outline-none font-mono"
+                      />
+                      <button
+                        onClick={handleResetPassword}
+                        disabled={resettingPassword}
+                        className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold disabled:opacity-60"
+                      >
+                        {resettingPassword ? 'Saving...' : 'Reset'}
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="flex justify-between items-center pt-2 border-t border-gray-100 dark:border-[#1E2E4E]">
@@ -2058,7 +2147,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                   </button>
 
                   <button
-                    onClick={() => { setSelectedUserForDetail(null); setIsEditingUser(false); }}
+                    onClick={() => { setSelectedUserForDetail(null); setIsEditingUser(false); setResetPassword(''); setResetFeedback(null); }}
                     className="px-4 py-2 bg-gray-100 hover:bg-gray-200 dark:bg-[#16223B] text-gray-700 dark:text-slate-300 rounded-xl font-semibold text-xs"
                   >
                     Close
