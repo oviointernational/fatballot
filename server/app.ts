@@ -317,8 +317,76 @@ app.post('/api/voters', requireAuth, (req: AuthenticatedRequest, res: Response) 
   }
 });
 
-app.put('/api/voters/:id/accredit', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.put('/api/voters/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   if (req.voter?.role !== 'superadmin' && req.voter?.role !== 'committee') {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'Committee member access required to edit voters.' });
+  }
+
+  const voterId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const target = db.getVoterById(voterId);
+  if (!target) {
+    return res.status(404).json({ error: 'NOT_FOUND', message: 'Voter not found.' });
+  }
+
+  // Only the Superadmin may edit a Superadmin account (or change roles).
+  const isSuperadmin = req.voter?.role === 'superadmin';
+  if (!isSuperadmin && (target.role === 'superadmin' || req.body.role)) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'Only Superadmin can edit Superadmin accounts or change roles.' });
+  }
+
+  const { email, firstName, middleName, lastName, department, phone, avatar, role } = req.body;
+  const updates: Record<string, unknown> = {};
+  if (email !== undefined) {
+    const cleanEmail = String(email).trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      return res.status(400).json({ error: 'INVALID_EMAIL', message: 'Please provide a valid email address.' });
+    }
+    const clash = db.getVoterByEmail(cleanEmail);
+    if (clash && clash.id !== target.id) {
+      return res.status(400).json({ error: 'EMAIL_TAKEN', message: 'Another voter is already registered with this email.' });
+    }
+    updates.email = cleanEmail;
+  }
+  if (firstName !== undefined) updates.firstName = String(firstName).trim();
+  if (middleName !== undefined) updates.middleName = String(middleName).trim();
+  if (lastName !== undefined) updates.lastName = String(lastName).trim();
+  if (department !== undefined) updates.department = String(department).trim();
+  if (phone !== undefined) updates.phone = String(phone).trim();
+  if (avatar !== undefined) updates.avatar = String(avatar).trim();
+  if (role !== undefined && isSuperadmin) {
+    if (!['voter', 'contestant', 'committee', 'superadmin'].includes(role)) {
+      return res.status(400).json({ error: 'INVALID_ROLE', message: 'Unknown role.' });
+    }
+    // There must always be at least one Superadmin left.
+    if (target.role === 'superadmin' && role !== 'superadmin' &&
+        db.getVoters().filter(v => v.role === 'superadmin').length <= 1) {
+      return res.status(400).json({ error: 'LAST_SUPERADMIN', message: 'The last Superadmin account cannot be demoted.' });
+    }
+    updates.role = role;
+  }
+
+  if (!updates.firstName && !target.firstName) {
+    return res.status(400).json({ error: 'INVALID_NAME', message: 'First name cannot be empty.' });
+  }
+
+  try {
+    const updated = db.updateVoter(target.id, updates);
+    auditLedger.recordEvent('VOTER_UPDATED', {
+      raNumber: req.voter!.raNumber,
+      name: `${req.voter!.firstName} ${req.voter!.lastName}`,
+      role: req.voter!.role
+    }, {
+      voterRA: updated.raNumber,
+      voterName: `${updated.firstName} ${updated.lastName}`,
+      updatedFields: Object.keys(updates)
+    });
+    res.json(updated);
+  } catch (err: any) {
+    res.status(400).json({ error: 'UPDATE_FAILED', message: err.message });
+  }
+});
+
+app.put('/api/voters/:id/accredit', requireAuth, (req: AuthenticatedRequest, res: Response) => {  if (req.voter?.role !== 'superadmin' && req.voter?.role !== 'committee') {
     return res.status(403).json({ error: 'FORBIDDEN', message: 'Committee member access required to accredit voters.' });
   }
 
@@ -349,6 +417,10 @@ app.delete('/api/voters/:id', requireAuth, (req: AuthenticatedRequest, res: Resp
 
   const voterId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const voter = db.getVoterById(voterId);
+  if (voter?.role === 'superadmin' &&
+      db.getVoters().filter(v => v.role === 'superadmin').length <= 1) {
+    return res.status(400).json({ error: 'LAST_SUPERADMIN', message: 'The last Superadmin account cannot be deleted.' });
+  }
   const deleted = db.deleteVoter(voterId);
 
   if (deleted) {
@@ -559,7 +631,16 @@ app.post('/api/auth/firebase-login', async (req: Request, res: Response) => {
 
 // Dev / testing shortcut: creates an exclusive session directly for an RA number.
 // Powers the quick-login buttons in AdminPage without needing Firebase.
+// DISABLED in production — passwordless email-link sign-in is the only gate.
 app.post('/api/auth/dev-login', (req: Request, res: Response) => {
+  const isProd = process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL);
+  if (isProd) {
+    return res.status(403).json({
+      error: 'DEV_LOGIN_DISABLED',
+      message: 'Quick login is disabled in production. Please sign in with your RA Number email link.'
+    });
+  }
+
   const { raNumber, deviceInfo } = req.body;
   if (!raNumber) {
     return res.status(400).json({ error: 'RA_REQUIRED', message: 'RA number is required.' });

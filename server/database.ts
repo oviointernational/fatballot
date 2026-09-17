@@ -89,6 +89,10 @@ export class Database {
     if (!this.supabase || this.supabaseReady) return;
     await this.pullFromSupabase();
     this.supabaseReady = true;
+    // Persist the guaranteed superadmin if the remote blob lacked one.
+    if (this.applySuperadminSeed(this.data)) {
+      await this.pushToSupabase(this.data);
+    }
     this.startAutoRefresh();
   }
 
@@ -156,7 +160,7 @@ export class Database {
     if (!parsed.observers) parsed.observers = [...initialObservers];
     if (parsed.settings && !parsed.settings.permissions) parsed.settings.permissions = { ...initialSettings.permissions };
 
-    return {
+    const store: StoreData = {
       settings: parsed.settings ?? { ...initialSettings },
       offices: parsed.offices ?? [...initialOffices],
       candidates: parsed.candidates ?? [...initialCandidates],
@@ -171,6 +175,77 @@ export class Database {
       agents: parsed.agents ?? [...initialAgents],
       observers: parsed.observers ?? [...initialObservers]
     };
+
+    // A superadmin account must always exist (fresh seeds and legacy stores).
+    this.applySuperadminSeed(store);
+    return store;
+  }
+
+  /**
+   * Guarantees exactly-once Superadmin presence and applies SUPERADMIN_*
+   * environment overrides (RA, email, names). The passwordless sign-in link
+   * is emailed to the Superadmin address, so production deployments point
+   * SUPERADMIN_EMAIL at a real inbox. Returns true when the store mutated.
+   */
+  private applySuperadminSeed(store: StoreData): boolean {
+    const envRA = (process.env.SUPERADMIN_RA || '1001').replace(/^RA-?/i, '').trim() || '1001';
+    const envEmail = (process.env.SUPERADMIN_EMAIL || '').trim().toLowerCase();
+    const envFirst = (process.env.SUPERADMIN_FIRST_NAME || '').trim();
+    const envLast = (process.env.SUPERADMIN_LAST_NAME || '').trim();
+    let changed = false;
+
+    let superadmin =
+      store.voters.find(v => v.role === 'superadmin') ??
+      store.voters.find(v => v.raNumber.replace(/^RA-?/i, '').trim() === envRA);
+
+    if (!superadmin) {
+      superadmin = {
+        id: `vot-superadmin`,
+        raNumber: envRA,
+        email: envEmail || 'superadmin@fatballot.org',
+        firstName: envFirst || 'Electoral',
+        middleName: 'Chief',
+        lastName: envLast || 'SuperAdmin',
+        role: 'superadmin',
+        isAccredited: true,
+        department: 'Electoral Commission Directorate',
+        phone: '',
+        registeredAt: new Date().toISOString()
+      };
+      store.voters.unshift(superadmin);
+      return true;
+    }
+
+    if (superadmin.role !== 'superadmin') {
+      superadmin.role = 'superadmin';
+      changed = true;
+    }
+    if (!superadmin.isAccredited) {
+      superadmin.isAccredited = true;
+      changed = true;
+    }
+    // Env overrides win when explicitly configured (e.g. first production
+    // deploy pointing the sign-in mailbox at a real address).
+    if (envEmail && superadmin.email.trim().toLowerCase() !== envEmail) {
+      superadmin.email = envEmail;
+      changed = true;
+    }
+    if (envFirst && superadmin.firstName !== envFirst) {
+      superadmin.firstName = envFirst;
+      changed = true;
+    }
+    if (envLast && superadmin.lastName !== envLast) {
+      superadmin.lastName = envLast;
+      changed = true;
+    }
+    return changed;
+  }
+
+  /** Public helper used by the production seed script. */
+  public ensureSuperadmin(): boolean {
+    const changed = this.applySuperadminSeed(this.data);
+    if (changed) this.saveData();
+    return changed;
   }
 
   private loadData(): StoreData {

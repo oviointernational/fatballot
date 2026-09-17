@@ -58,6 +58,9 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
   const isSuperadmin = user?.role === 'superadmin';
   const isCommittee = user?.role === 'committee';
   const canAccessAdmin = isSuperadmin || isCommittee;
+  // Quick-login shortcuts are a dev-only convenience; never render them in
+  // production builds (the server also rejects /api/auth/dev-login there).
+  const isProdBuild = import.meta.env.PROD;
 
   const [activeTab, setActiveTab] = useState<AdminTab>(() => isSuperadmin ? 'access' : 'users');
   
@@ -85,6 +88,17 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
 
   // Modals & details
   const [selectedUserForDetail, setSelectedUserForDetail] = useState<Voter | null>(null);
+
+  // Edit-user state (Superadmin record included — editable from this chamber)
+  const [isEditingUser, setIsEditingUser] = useState(false);
+  const [editFirstName, setEditFirstName] = useState('');
+  const [editMiddleName, setEditMiddleName] = useState('');
+  const [editLastName, setEditLastName] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  const [editDepartment, setEditDepartment] = useState('');
+  const [editPhone, setEditPhone] = useState('');
+  const [editError, setEditError] = useState<string | null>(null);
+  const [savingUserEdit, setSavingUserEdit] = useState(false);
 
   // Tab 1: Access Control & Superadmin Settings
   const [permissions, setPermissions] = useState(settings.permissions || {
@@ -438,9 +452,60 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
     }
   };
 
+  // Edit Voter (name, email, department, phone — Superadmin included)
+  const startEditingUser = (voter: Voter) => {
+    setEditFirstName(voter.firstName);
+    setEditMiddleName(voter.middleName || '');
+    setEditLastName(voter.lastName);
+    setEditEmail(voter.email);
+    setEditDepartment(voter.department || '');
+    setEditPhone(voter.phone || '');
+    setEditError(null);
+    setIsEditingUser(true);
+  };
+
+  const handleSaveUserEdit = async () => {
+    if (!selectedUserForDetail) return;
+    if (!editFirstName.trim() || !editLastName.trim() || !editEmail.trim()) {
+      setEditError('First name, last name, and email are required.');
+      return;
+    }
+    setSavingUserEdit(true);
+    setEditError(null);
+    try {
+      const res = await fetch(`/api/voters/${selectedUserForDetail.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-session-token': sessionToken || ''
+        },
+        body: JSON.stringify({
+          firstName: editFirstName.trim(),
+          middleName: editMiddleName.trim(),
+          lastName: editLastName.trim(),
+          email: editEmail.trim(),
+          department: editDepartment.trim(),
+          phone: editPhone.trim()
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setVoters(prev => prev.map(v => v.id === data.id ? data : v));
+        setSelectedUserForDetail(data);
+        setIsEditingUser(false);
+        refreshAll();
+      } else {
+        setEditError(data.message || 'Failed to save changes.');
+      }
+    } catch (err: any) {
+      setEditError(err.message || 'Network error.');
+    } finally {
+      setSavingUserEdit(false);
+    }
+  };
+
   // Delete Voter
-  const handleDeleteVoter = async (voterId: string) => {
-    if (!confirm('Are you sure you want to remove this voter? You can re-register them anytime.')) return;
+  const handleDeleteVoter = async (voterId: string) => {    if (!confirm('Are you sure you want to remove this voter? You can re-register them anytime.')) return;
     try {
       const res = await fetch(`/api/voters/${voterId}`, {
         method: 'DELETE',
@@ -913,23 +978,27 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
           This portal is reserved strictly for appointed Committee Administrators and the Superadmin. Constituents without administrative accreditation cannot access this governance chamber.
         </p>
         <div className="flex flex-col sm:flex-row items-center justify-center gap-2 pt-2">
+          {!isProdBuild && (
+            <>
+              <button
+                onClick={() => quickLogin('1001')}
+                className="w-full sm:w-auto px-5 py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl shadow-md transition-all text-xs"
+              >
+                Login as SuperAdmin (RA-1001)
+              </button>
+              <button
+                onClick={() => quickLogin('1002')}
+                className="w-full sm:w-auto px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow-md transition-all text-xs"
+              >
+                Login as Committee (RA-1002)
+              </button>
+            </>
+          )}
           <button
-            onClick={() => quickLogin('1001')}
-            className="w-full sm:w-auto px-5 py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl shadow-md transition-all text-xs"
-          >
-            Login as SuperAdmin (RA-1001)
-          </button>
-          <button
-            onClick={() => quickLogin('1002')}
-            className="w-full sm:w-auto px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow-md transition-all text-xs"
-          >
-            Login as Committee (RA-1002)
-          </button>
-          <button
-            onClick={() => onNavigate('dashboard')}
+            onClick={() => onNavigate(isProdBuild ? 'login' : 'dashboard')}
             className="w-full sm:w-auto px-5 py-2.5 border border-gray-300 dark:border-[#1E2E4E] text-gray-700 dark:text-slate-300 font-semibold rounded-xl text-xs"
           >
-            Return to Dashboard
+            {isProdBuild ? 'Go to Secure Sign In' : 'Return to Dashboard'}
           </button>
         </div>
       </div>
@@ -1052,28 +1121,32 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
         </div>
 
         <div className="flex items-center space-x-2 shrink-0">
-          <button
-            type="button"
-            onClick={() => quickLogin('1001')}
-            className={`px-3 py-1.5 rounded-xl font-bold transition-all text-xs ${
-              isSuperadmin
-                ? 'bg-purple-600 text-white shadow-xs'
-                : 'border border-gray-200 dark:border-[#1E2E4E] text-gray-600 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-slate-800'
-            }`}
-          >
-            SuperAdmin (RA-1001)
-          </button>
-          <button
-            type="button"
-            onClick={() => quickLogin('1002')}
-            className={`px-3 py-1.5 rounded-xl font-bold transition-all text-xs ${
-              user?.raNumber === '1002'
-                ? 'bg-indigo-600 text-white shadow-xs'
-                : 'border border-gray-200 dark:border-[#1E2E4E] text-gray-600 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-slate-800'
-            }`}
-          >
-            Committee (RA-1002)
-          </button>
+          {!isProdBuild && (
+            <>
+              <button
+                type="button"
+                onClick={() => quickLogin('1001')}
+                className={`px-3 py-1.5 rounded-xl font-bold transition-all text-xs ${
+                  isSuperadmin
+                    ? 'bg-purple-600 text-white shadow-xs'
+                    : 'border border-gray-200 dark:border-[#1E2E4E] text-gray-600 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                SuperAdmin (RA-1001)
+              </button>
+              <button
+                type="button"
+                onClick={() => quickLogin('1002')}
+                className={`px-3 py-1.5 rounded-xl font-bold transition-all text-xs ${
+                  user?.raNumber === '1002'
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : 'border border-gray-200 dark:border-[#1E2E4E] text-gray-600 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                Committee (RA-1002)
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -1881,12 +1954,66 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                     <h3 className="font-extrabold text-base text-gray-900 dark:text-white">User Registry Credentials</h3>
                     <span className="font-mono text-xs text-blue-600 dark:text-blue-400">RA-{selectedUserForDetail.raNumber}</span>
                   </div>
-                  <button onClick={() => setSelectedUserForDetail(null)} className="text-gray-400 hover:text-gray-600">
+                  <button onClick={() => { setSelectedUserForDetail(null); setIsEditingUser(false); }} className="text-gray-400 hover:text-gray-600">
                     <X className="w-5 h-5" />
                   </button>
                 </div>
 
                 <div className="space-y-3 text-xs">
+                  {isEditingUser ? (
+                    <div className="p-3 bg-gray-50 dark:bg-[#16223B] rounded-2xl space-y-2.5">
+                      {editError && (
+                        <div className="p-2.5 rounded-xl bg-red-50 text-red-700 text-xs border border-red-200">
+                          {editError}
+                        </div>
+                      )}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block font-semibold mb-1">First Name *</label>
+                          <input type="text" value={editFirstName} onChange={(e) => setEditFirstName(e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-white dark:bg-[#0F172A] outline-none" />
+                        </div>
+                        <div>
+                          <label className="block font-semibold mb-1">Last Name *</label>
+                          <input type="text" value={editLastName} onChange={(e) => setEditLastName(e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-white dark:bg-[#0F172A] outline-none" />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block font-semibold mb-1">Middle Name</label>
+                        <input type="text" value={editMiddleName} onChange={(e) => setEditMiddleName(e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-white dark:bg-[#0F172A] outline-none" />
+                      </div>
+                      <div>
+                        <label className="block font-semibold mb-1">Email Address *</label>
+                        <input type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-white dark:bg-[#0F172A] outline-none" />
+                        <p className="text-[10px] text-gray-400 mt-1">Sign-in links are emailed here — use a real inbox.</p>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block font-semibold mb-1">Department</label>
+                          <input type="text" value={editDepartment} onChange={(e) => setEditDepartment(e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-white dark:bg-[#0F172A] outline-none" />
+                        </div>
+                        <div>
+                          <label className="block font-semibold mb-1">Phone</label>
+                          <input type="text" value={editPhone} onChange={(e) => setEditPhone(e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-white dark:bg-[#0F172A] outline-none" />
+                        </div>
+                      </div>
+                      <div className="flex justify-end space-x-2 pt-1">
+                        <button onClick={() => setIsEditingUser(false)}
+                          className="px-4 py-2 rounded-xl border border-gray-300 text-gray-600 hover:bg-gray-100 font-semibold">
+                          Cancel
+                        </button>
+                        <button onClick={handleSaveUserEdit} disabled={savingUserEdit}
+                          className="px-5 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold disabled:opacity-60">
+                          {savingUserEdit ? 'Saving...' : 'Save Changes'}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
                   <div className="grid grid-cols-2 gap-2 p-3 bg-gray-50 dark:bg-[#16223B] rounded-2xl">
                     <div>
                       <span className="text-gray-400 block text-[10px]">Full Legal Name</span>
@@ -1906,7 +2033,17 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                       <span className="text-gray-400 block text-[10px]">Electoral Role</span>
                       <span className="font-bold uppercase text-purple-600">{selectedUserForDetail.role}</span>
                     </div>
+                    <div className="col-span-2 pt-1">
+                      <button
+                        onClick={() => startEditingUser(selectedUserForDetail)}
+                        className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 rounded-xl font-bold hover:bg-purple-100 text-xs"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                        <span>Edit Details</span>
+                      </button>
+                    </div>
                   </div>
+                  )}
 
                   {/* Accreditation control */}
                   <div className="p-3 bg-blue-50/50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900/50 rounded-2xl flex items-center justify-between">
@@ -1942,7 +2079,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                   </button>
 
                   <button
-                    onClick={() => setSelectedUserForDetail(null)}
+                    onClick={() => { setSelectedUserForDetail(null); setIsEditingUser(false); }}
                     className="px-4 py-2 bg-gray-100 hover:bg-gray-200 dark:bg-[#16223B] text-gray-700 dark:text-slate-300 rounded-xl font-semibold text-xs"
                   >
                     Close

@@ -183,7 +183,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Server-side bypass used by dev/test shortcuts in AdminPage.
   // Creates an exclusive backend session directly for an RA number without Firebase.
+  // DISABLED in production builds — the server also rejects it there.
   const quickLogin = async (raNumber: string) => {
+    if (import.meta.env.PROD) {
+      alert('Quick login is disabled in production. Please sign in with your RA Number email link.');
+      return false;
+    }
     try {
       const cleanRA = raNumber.replace(/^RA-?/i, '').trim();
       const res = await fetch('/api/auth/dev-login', {
