@@ -1,20 +1,21 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { Voter } from '../types';
 import {
-  sendSignInLinkToEmail,
-  signInWithEmailLink,
-  isSignInWithEmailLink
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
+  signOut as firebaseSignOut
 } from 'firebase/auth';
-import { firebaseAuth, EMAIL_LINK_REDIRECT_URL } from '../lib/firebase';
+import { firebaseAuth, PASSWORD_RESET_REDIRECT_URL } from '../lib/firebase';
 
 // Supabase is no longer used on the client side; the backend persists via
 // server/supabase.ts with environment-configured credentials.
 // This export is kept only if downstream code references it.
 export const supa = null;
 
-interface MagicLinkInfo {
-  email: string;
-  voterName: string;
+interface AuthResult {
+  success: boolean;
+  message: string;
 }
 
 interface AuthContextType {
@@ -22,26 +23,49 @@ interface AuthContextType {
   sessionToken: string | null;
   isLoading: boolean;
   supersededError: string | null;
-  pendingMagicLink: MagicLinkInfo | null;
-  requestMagicLink: (raNumber: string) => Promise<{ success: boolean; message: string; info?: MagicLinkInfo }>;
+  setupRequired: boolean;
+  refreshSetupStatus: () => Promise<void>;
+  login: (email: string, password: string) => Promise<AuthResult>;
+  activateAccount: (email: string, password: string) => Promise<AuthResult>;
+  requestPasswordReset: (email: string) => Promise<AuthResult>;
+  setupSuperadmin: (profile: { email: string; password: string; firstName: string; lastName: string }) => Promise<AuthResult>;
   logout: () => Promise<void>;
-  clearPendingMagicLink: () => void;
   clearSupersededError: () => void;
   quickLogin: (raNumber: string) => Promise<boolean>;
-  completingFirebaseLink: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const EMAIL_STORAGE_KEY = 'fatballot_email_for_signin';
+function firebaseErrorMessage(err: any, fallback: string): string {
+  const code: string = err?.code || '';
+  switch (code) {
+    case 'auth/invalid-email':
+      return 'Please enter a valid email address.';
+    case 'auth/user-not-found':
+    case 'auth/wrong-password':
+    case 'auth/invalid-credential':
+      return 'Incorrect email or password. If you have not activated your account yet, use "Activate your account" below.';
+    case 'auth/email-already-in-use':
+      return 'This email is already activated. Sign in instead, or reset your password if you forgot it.';
+    case 'auth/weak-password':
+      return 'Password must be at least 6 characters.';
+    case 'auth/too-many-requests':
+      return 'Too many attempts. Please wait a few minutes and try again.';
+    case 'auth/operation-not-allowed':
+      return 'Email/password sign-in is not enabled for this Firebase project. Enable it under Authentication -> Sign-in method.';
+    case 'auth/network-request-failed':
+      return 'Network error. Check your connection and try again.';
+    default:
+      return err?.message || fallback;
+  }
+}
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<Voter | null>(null);
   const [sessionToken, setSessionToken] = useState<string | null>(() => localStorage.getItem('fatballot_token'));
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [supersededError, setSupersededError] = useState<string | null>(null);
-  const [pendingMagicLink, setPendingMagicLink] = useState<MagicLinkInfo | null>(null);
-  const [completingFirebaseLink, setCompletingFirebaseLink] = useState<boolean>(false);
+  const [setupRequired, setSetupRequired] = useState<boolean>(false);
 
   const fetchCurrentUser = useCallback(async (token: string) => {
     try {
@@ -75,6 +99,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
+  const refreshSetupStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/auth/setup-status');
+      if (res.ok) {
+        const data = await res.json();
+        setSetupRequired(Boolean(data.setupRequired));
+      }
+    } catch (err) {
+      console.error('Error fetching setup status:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshSetupStatus();
+  }, [refreshSetupStatus]);
+
   useEffect(() => {
     if (sessionToken) {
       fetchCurrentUser(sessionToken);
@@ -83,7 +123,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [sessionToken, fetchCurrentUser]);
 
-  // Exchange a verified Firebase ID token for an exclusive backend session
+  // Exchange a verified Firebase ID token for an exclusive backend session.
+  // The backend denies any email that is not enrolled on the electoral roll.
   const finalizeSession = async (idToken: string, deviceInfo: string) => {
     const res = await fetch('/api/auth/firebase-login', {
       method: 'POST',
@@ -93,91 +134,126 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const data = await res.json();
     if (!res.ok) {
+      // Roll rejection: drop the Firebase session too so state stays clean.
+      await firebaseSignOut(firebaseAuth).catch(() => undefined);
       throw new Error(data.message || 'Login failed.');
     }
 
     setUser(data.voter);
     setSessionToken(data.sessionToken);
     localStorage.setItem('fatballot_token', data.sessionToken);
-    setPendingMagicLink(null);
     setSupersededError(null);
   };
 
-  // When the user clicks the Firebase email link, this completes the sign-in
-  const completeFirebaseSignIn = useCallback(async (): Promise<boolean> => {
-    if (!isSignInWithEmailLink(firebaseAuth, window.location.href)) return false;
-
-    setCompletingFirebaseLink(true);
-    setIsLoading(true);
+  // Standard sign-in for activated accounts.
+  const login = async (email: string, password: string): Promise<AuthResult> => {
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail || !password) {
+      return { success: false, message: 'Please enter your email and password.' };
+    }
     try {
-      const email = window.localStorage.getItem(EMAIL_STORAGE_KEY);
-      if (!email) {
-        throw new Error('No pending sign-in email found. Please request a new sign-in link and click it again.');
-      }
-
-      const userCred = await signInWithEmailLink(firebaseAuth, email, window.location.href);
-      const idToken = await userCred.user.getIdToken();
-
+      const cred = await signInWithEmailAndPassword(firebaseAuth, cleanEmail, password);
+      const idToken = await cred.user.getIdToken();
       await finalizeSession(idToken, navigator.userAgent);
-
-      // Clean the URL to remove the oobCode so refresh doesn't re-attempt sign-in
-      window.history.replaceState({}, document.title, window.location.pathname);
-      return true;
+      return { success: true, message: 'Signed in successfully.' };
     } catch (err: any) {
-      alert(err.message || 'Failed to complete the sign-in link.');
-      return false;
-    } finally {
-      setCompletingFirebaseLink(false);
-      setIsLoading(false);
+      await firebaseSignOut(firebaseAuth).catch(() => undefined);
+      return { success: false, message: firebaseErrorMessage(err, 'Sign-in failed.') };
     }
-  }, []);
+  };
 
-  // Detect and complete a Firebase email-link sign-in on app load
-  useEffect(() => {
-    if (isSignInWithEmailLink(firebaseAuth, window.location.href)) {
-      completeFirebaseSignIn();
+  // First-time activation: the email must already be enrolled on the
+  // electoral roll by an administrator — no self-registration.
+  const activateAccount = async (email: string, password: string): Promise<AuthResult> => {
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail || !password) {
+      return { success: false, message: 'Please enter your email and choose a password.' };
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Request a magic link with an RA Number -> Firebase emails the bound address
-  const requestMagicLink = async (raNumber: string) => {
+    if (password.length < 6) {
+      return { success: false, message: 'Password must be at least 6 characters.' };
+    }
     try {
-      const cleanRA = raNumber.replace(/^RA-?/i, '').trim();
-      const res = await fetch('/api/auth/request-magic-link', {
+      const gate = await fetch('/api/auth/request-activation', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ raNumber: cleanRA })
+        body: JSON.stringify({ email: cleanEmail })
       });
+      const gateData = await gate.json();
+      if (!gate.ok) {
+        return { success: false, message: gateData.message || 'This email is not on the electoral roll.' };
+      }
 
+      const cred = await createUserWithEmailAndPassword(firebaseAuth, cleanEmail, password);
+      const idToken = await cred.user.getIdToken();
+      await finalizeSession(idToken, navigator.userAgent);
+      return { success: true, message: `Welcome, ${gateData.voterName}. Your account is activated.` };
+    } catch (err: any) {
+      await firebaseSignOut(firebaseAuth).catch(() => undefined);
+      return { success: false, message: firebaseErrorMessage(err, 'Activation failed.') };
+    }
+  };
+
+  // Password reset for activated accounts (Firebase dispatches the email).
+  const requestPasswordReset = async (email: string): Promise<AuthResult> => {
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail) {
+      return { success: false, message: 'Please enter your email address.' };
+    }
+    try {
+      await sendPasswordResetEmail(firebaseAuth, cleanEmail, {
+        url: PASSWORD_RESET_REDIRECT_URL()
+      });
+      return {
+        success: true,
+        message: 'If this email is activated, a password-reset link is on its way. Check your inbox (and spam).'
+      };
+    } catch (err: any) {
+      return { success: false, message: firebaseErrorMessage(err, 'Could not send reset email.') };
+    }
+  };
+
+  // First-to-register: claims the Superadmin seat on a fresh system, then
+  // creates the Firebase credential and signs in. Single-use by design.
+  const setupSuperadmin = async (profile: { email: string; password: string; firstName: string; lastName: string }): Promise<AuthResult> => {
+    const cleanEmail = profile.email.trim().toLowerCase();
+    if (!cleanEmail || !profile.password || !profile.firstName.trim() || !profile.lastName.trim()) {
+      return { success: false, message: 'Please complete all fields.' };
+    }
+    if (profile.password.length < 6) {
+      return { success: false, message: 'Password must be at least 6 characters.' };
+    }
+    try {
+      const res = await fetch('/api/auth/setup-superadmin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: cleanEmail,
+          firstName: profile.firstName.trim(),
+          lastName: profile.lastName.trim()
+        })
+      });
       const data = await res.json();
       if (!res.ok) {
-        return { success: false, message: data.message || 'Failed to request sign-in link.' };
+        return { success: false, message: data.message || 'Setup failed.' };
       }
 
-      const email: string = data.email;
-      const voterName: string = data.voterName;
-
-      // Firebase dispatches the passwordless sign-in email to the voter's bound address
-      await sendSignInLinkToEmail(firebaseAuth, email, {
-        url: EMAIL_LINK_REDIRECT_URL(),
-        handleCodeInApp: true
-      });
-
-      window.localStorage.setItem(EMAIL_STORAGE_KEY, email);
-
-      const info: MagicLinkInfo = { email, voterName };
-      setPendingMagicLink(info);
-      return { success: true, message: data.message, info };
+      let cred;
+      try {
+        cred = await createUserWithEmailAndPassword(firebaseAuth, cleanEmail, profile.password);
+      } catch (err: any) {
+        if (err?.code === 'auth/email-already-in-use') {
+          cred = await signInWithEmailAndPassword(firebaseAuth, cleanEmail, profile.password);
+        } else {
+          throw err;
+        }
+      }
+      const idToken = await cred.user.getIdToken();
+      await finalizeSession(idToken, navigator.userAgent);
+      await refreshSetupStatus();
+      return { success: true, message: 'Superadmin account claimed. You are signed in.' };
     } catch (err: any) {
-      const code = err?.code || '';
-      if (code === 'auth/operation-not-allowed') {
-        return {
-          success: false,
-          message: 'Email link (passwordless) sign-in is not enabled for this Firebase project. Enable it under Authentication -> Sign-in method.'
-        };
-      }
-      return { success: false, message: err.message || 'Network error occurred.' };
+      await firebaseSignOut(firebaseAuth).catch(() => undefined);
+      return { success: false, message: firebaseErrorMessage(err, 'Setup failed.') };
     }
   };
 
@@ -186,7 +262,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // DISABLED in production builds — the server also rejects it there.
   const quickLogin = async (raNumber: string) => {
     if (import.meta.env.PROD) {
-      alert('Quick login is disabled in production. Please sign in with your RA Number email link.');
+      alert('Quick login is disabled in production. Please sign in with your email and password.');
       return false;
     }
     try {
@@ -224,12 +300,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.error('Logout error', err);
       }
     }
+    await firebaseSignOut(firebaseAuth).catch(() => undefined);
     setUser(null);
     setSessionToken(null);
     localStorage.removeItem('fatballot_token');
   };
 
-  const clearPendingMagicLink: () => void = () => setPendingMagicLink(null);
   const clearSupersededError: () => void = () => setSupersededError(null);
 
   return (
@@ -239,13 +315,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         sessionToken,
         isLoading,
         supersededError,
-        pendingMagicLink,
-        requestMagicLink,
+        setupRequired,
+        refreshSetupStatus,
+        login,
+        activateAccount,
+        requestPasswordReset,
+        setupSuperadmin,
         logout,
-        clearPendingMagicLink,
         clearSupersededError,
-        quickLogin,
-        completingFirebaseLink
+        quickLogin
       }}
     >
       {children}

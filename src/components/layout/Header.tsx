@@ -140,7 +140,7 @@ export const Header: React.FC<HeaderProps> = ({ isSidebarOpen = true, onToggleSi
                 className="flex items-center space-x-2 px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-md shadow-blue-500/20 transition-all"
               >
                 <User className="w-4 h-4" />
-                <span>Sign In (RA No.)</span>
+                <span>Sign In</span>
               </button>
             )}
 

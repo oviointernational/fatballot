@@ -34,6 +34,8 @@ function formatEventTitle(block: AuditBlock): string {
       return "Accreditation: Status → Pending";
     case "VOTER_REGISTERED":
       return "Registration: Status → Enrolled";
+    case "VOTER_UPDATED":
+      return "Registration: Status → Details Updated";
     case "VOTER_DELETED":
       return "Registration: Status → Removed";
     case "OFFICE_ASSIGNED":
@@ -66,12 +68,16 @@ function formatEventTitle(block: AuditBlock): string {
       return "Export: Status → PDF Generated";
     case "AUTH_MAGIC_LINK_REQUESTED":
       return "Sign-In: Status → Magic Link Sent";
+    case "AUTH_ACTIVATION_REQUESTED":
+      return "Sign-In: Status → Account Activated";
     case "AUTH_LOGIN_SUCCESS":
       return "Sign-In: Status → Authenticated";
     case "AUTH_LOGOUT":
       return "Sign-In: Status → Logged Out";
     case "GENESIS_BLOCK":
       return "Ledger: Status → Genesis Initialized";
+    case "SUPERADMIN_SETUP":
+      return "Governance: Status → Superadmin Claimed";
     default:
       return `${block.eventType}: Status → Recorded`;
   }
@@ -153,13 +159,13 @@ export const ProfilePage: React.FC<{ onNavigate: (page: string) => void }> = ({ 
         </div>
         <h2 className="text-xl font-bold text-gray-900 dark:text-white">Sign In to View Voter Profile</h2>
         <p className="text-sm text-gray-500 dark:text-slate-400">
-          Enter your registered RA Number to inspect your ballot record, accreditation credentials, and security ledger.
+          Sign in with your email and password to inspect your ballot record, accreditation credentials, and security ledger.
         </p>
         <button
           onClick={() => onNavigate('login')}
           className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl shadow-md transition-all inline-flex items-center space-x-2"
         >
-          <span>Sign In with RA Number</span>
+          <span>Sign In with Email</span>
           <ArrowRight className="w-4 h-4" />
         </button>
       </div>

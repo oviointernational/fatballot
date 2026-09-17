@@ -1922,6 +1922,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
 
                   <p className="text-[11px] text-gray-400 italic">
                     Note: Users are not accredited during registration. Accreditation is granted separately.
+                    After enrolment, the user opens Sign In → Activate and sets their password with this email.
                   </p>
 
                   <div className="flex justify-end space-x-2 pt-2">

@@ -82,6 +82,45 @@ function optionalAuth(req: AuthenticatedRequest, res: Response, next: NextFuncti
 }
 
 // ----------------------------------------------------
+// PERMISSIONS (Superadmin-delegated access control)
+// ----------------------------------------------------
+// The Access Control matrix (settings.permissions) decides which roles or
+// individual officers may perform each administrative mandate. Superadmin
+// always passes. Entries may be role names ('committee') or specific
+// voter ids / RA numbers (per-officer delegation from the Admin portal).
+const PERMISSION_MAP: Record<string, 'canRegisterUsers' | 'canAccreditUsers' | 'canCreateOffices' | 'canAssignOffices' | 'canCreateScreeningCriteria' | 'canAssignAgents' | 'canCreateObservers'> = {
+  registerUsers: 'canRegisterUsers',
+  accreditUsers: 'canAccreditUsers',
+  createOffices: 'canCreateOffices',
+  assignOffices: 'canAssignOffices',
+  screeningCriteria: 'canCreateScreeningCriteria',
+  agents: 'canAssignAgents',
+  observers: 'canCreateObservers'
+};
+
+function hasPermission(action: keyof typeof PERMISSION_MAP, voter: ReturnType<typeof db.getVoterById>): boolean {
+  if (!voter) return false;
+  if (voter.role === 'superadmin') return true;
+  const perms = db.getSettings().permissions;
+  // Legacy fallback when no matrix is stored: committee members retain access.
+  if (!perms) return voter.role === 'committee';
+  const list = perms[PERMISSION_MAP[action]] || [];
+  return list.includes(voter.role) || list.includes(voter.id) || list.includes(voter.raNumber);
+}
+
+function requirePermission(action: keyof typeof PERMISSION_MAP) {
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    if (!hasPermission(action, req.voter)) {
+      return res.status(403).json({
+        error: 'FORBIDDEN',
+        message: 'Your administrator has not granted you permission for this action. Contact the Superadmin.'
+      });
+    }
+    next();
+  };
+}
+
+// ----------------------------------------------------
 // SETTINGS
 // ----------------------------------------------------
 app.get('/api/settings', (_req: Request, res: Response) => {
@@ -133,7 +172,7 @@ app.get('/api/offices', (_req: Request, res: Response) => {
   res.json(db.getOffices());
 });
 
-app.post('/api/offices', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/offices', requireAuth, requirePermission('createOffices'), (req: AuthenticatedRequest, res: Response) => {
   if (req.voter?.role !== 'superadmin' && req.voter?.role !== 'committee') {
     return res.status(403).json({ error: 'FORBIDDEN', message: 'Committee permission required.' });
   }
@@ -163,7 +202,7 @@ app.get('/api/candidates/:id', (req: Request, res: Response) => {
   res.json(cand);
 });
 
-app.post('/api/candidates', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/candidates', requireAuth, requirePermission('assignOffices'), (req: AuthenticatedRequest, res: Response) => {
   if (req.voter?.role !== 'superadmin' && req.voter?.role !== 'committee') {
     return res.status(403).json({ error: 'FORBIDDEN', message: 'Committee permission required.' });
   }
@@ -179,7 +218,7 @@ app.post('/api/candidates', requireAuth, (req: AuthenticatedRequest, res: Respon
   res.status(201).json(cand);
 });
 
-app.delete('/api/offices/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.delete('/api/offices/:id', requireAuth, requirePermission('createOffices'), (req: AuthenticatedRequest, res: Response) => {
   if (req.voter?.role !== 'superadmin' && req.voter?.role !== 'committee') {
     return res.status(403).json({ error: 'FORBIDDEN', message: 'Committee permission required.' });
   }
@@ -199,7 +238,7 @@ app.delete('/api/offices/:id', requireAuth, (req: AuthenticatedRequest, res: Res
   res.status(404).json({ error: 'NOT_FOUND' });
 });
 
-app.post('/api/offices/assign', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/offices/assign', requireAuth, requirePermission('assignOffices'), (req: AuthenticatedRequest, res: Response) => {
   if (req.voter?.role !== 'superadmin' && req.voter?.role !== 'committee') {
     return res.status(403).json({ error: 'FORBIDDEN', message: 'Committee permission required.' });
   }
@@ -228,7 +267,7 @@ app.post('/api/offices/assign', requireAuth, (req: AuthenticatedRequest, res: Re
   }
 });
 
-app.post('/api/offices/unassign', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/offices/unassign', requireAuth, requirePermission('assignOffices'), (req: AuthenticatedRequest, res: Response) => {
   if (req.voter?.role !== 'superadmin' && req.voter?.role !== 'committee') {
     return res.status(403).json({ error: 'FORBIDDEN', message: 'Committee permission required.' });
   }
@@ -279,7 +318,7 @@ app.get('/api/voters', (_req: Request, res: Response) => {
   res.json(voters);
 });
 
-app.post('/api/voters', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/voters', requireAuth, requirePermission('registerUsers'), (req: AuthenticatedRequest, res: Response) => {
   if (req.voter?.role !== 'superadmin' && req.voter?.role !== 'committee') {
     return res.status(403).json({ error: 'FORBIDDEN', message: 'Committee member access required to register voters.' });
   }
@@ -317,7 +356,7 @@ app.post('/api/voters', requireAuth, (req: AuthenticatedRequest, res: Response) 
   }
 });
 
-app.put('/api/voters/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.put('/api/voters/:id', requireAuth, requirePermission('registerUsers'), (req: AuthenticatedRequest, res: Response) => {
   if (req.voter?.role !== 'superadmin' && req.voter?.role !== 'committee') {
     return res.status(403).json({ error: 'FORBIDDEN', message: 'Committee member access required to edit voters.' });
   }
@@ -386,7 +425,7 @@ app.put('/api/voters/:id', requireAuth, (req: AuthenticatedRequest, res: Respons
   }
 });
 
-app.put('/api/voters/:id/accredit', requireAuth, (req: AuthenticatedRequest, res: Response) => {  if (req.voter?.role !== 'superadmin' && req.voter?.role !== 'committee') {
+app.put('/api/voters/:id/accredit', requireAuth, requirePermission('accreditUsers'), (req: AuthenticatedRequest, res: Response) => {  if (req.voter?.role !== 'superadmin' && req.voter?.role !== 'committee') {
     return res.status(403).json({ error: 'FORBIDDEN', message: 'Committee member access required to accredit voters.' });
   }
 
@@ -410,7 +449,7 @@ app.put('/api/voters/:id/accredit', requireAuth, (req: AuthenticatedRequest, res
   }
 });
 
-app.delete('/api/voters/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.delete('/api/voters/:id', requireAuth, requirePermission('registerUsers'), (req: AuthenticatedRequest, res: Response) => {
   if (req.voter?.role !== 'superadmin' && req.voter?.role !== 'committee') {
     return res.status(403).json({ error: 'FORBIDDEN', message: 'Committee member access required to delete voters.' });
   }
@@ -519,40 +558,123 @@ app.get('/api/ycec', (_req: Request, res: Response) => {
 });
 
 // ----------------------------------------------------
-// AUTHENTICATION (RA Number Magic Link & Single Device)
+// AUTHENTICATION (Firebase Email/Password + Single Device)
 // ----------------------------------------------------
-app.post('/api/auth/request-magic-link', (req: Request, res: Response) => {
-  const { raNumber } = req.body;
-  if (!raNumber) {
-    return res.status(400).json({ error: 'RA_REQUIRED', message: 'Please enter your RA Number.' });
-  }
+// Registration is CLOSED: nobody can self-register. The electoral roll is
+// built exclusively by staff holding the 'registerUsers' permission, and the
+// very first account — the Superadmin — is claimed once via setup-superadmin
+// on a fresh system. Every other user then ACTIVATES with the email already
+// on the roll (request-activation) and signs in with email + password.
 
-  // GATE: The email bound to the RA Number is looked up. Unknown RA -> Access Denied.
-  const voter = db.getVoterByRA(String(raNumber).replace(/^RA-?/i, ''));
-  if (!voter) {
-    return res.status(404).json({
-      error: 'VOTER_NOT_FOUND',
-      message: `Access Denied. No voter found with RA Number ${raNumber.replace(/^RA-?/i, '')}. Please contact the Electoral Committee.`
+// A fresh system = only the placeholder Superadmin, empty ballot box.
+// Once the seat is claimed (real name + real email), setup closes forever.
+const PLACEHOLDER_SUPERADMIN_EMAIL = 'superadmin@fatballot.org';
+function isFreshSystem(): boolean {
+  const voters = db.getVoters();
+  if (voters.length !== 1 || db.getCandidates().length !== 0 || db.getVotes().length !== 0) {
+    return false;
+  }
+  const only = voters[0];
+  return only.role === 'superadmin' && only.email.trim().toLowerCase() === PLACEHOLDER_SUPERADMIN_EMAIL;
+}
+
+app.get('/api/auth/setup-status', (_req: Request, res: Response) => {
+  res.json({ setupRequired: isFreshSystem() });
+});
+
+// First-to-register: claims the Superadmin seat on a fresh system.
+// Single-use by design — afterwards it returns 403 SETUP_COMPLETE.
+app.post('/api/auth/setup-superadmin', (req: Request, res: Response) => {
+  if (!isFreshSystem()) {
+    return res.status(403).json({
+      error: 'SETUP_COMPLETE',
+      message: 'The Superadmin account has already been claimed.'
     });
   }
 
-  auditLedger.recordEvent('AUTH_MAGIC_LINK_REQUESTED', {
+  const { email, firstName, lastName } = req.body;
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+    return res.status(400).json({ error: 'INVALID_EMAIL', message: 'Please provide a valid email address.' });
+  }
+  if (cleanEmail === PLACEHOLDER_SUPERADMIN_EMAIL) {
+    return res.status(400).json({ error: 'PLACEHOLDER_EMAIL', message: 'Please use your real email address — sign-in credentials are issued to it.' });
+  }
+  if (!String(firstName || '').trim() || !String(lastName || '').trim()) {
+    return res.status(400).json({ error: 'MISSING_FIELDS', message: 'First name and last name are required.' });
+  }
+
+  const clash = db.getVoterByEmail(cleanEmail);
+  const superadmin = db.getVoters().find(v => v.role === 'superadmin') ?? db.getVoterByRA('1001');
+  if (!superadmin) {
+    return res.status(500).json({ error: 'NO_SUPERADMIN', message: 'Superadmin seed missing. Restart the server.' });
+  }
+  if (clash && clash.id !== superadmin.id) {
+    return res.status(400).json({ error: 'EMAIL_TAKEN', message: 'This email is already on the electoral roll.' });
+  }
+
+  const updated = db.updateVoter(superadmin.id, {
+    email: cleanEmail,
+    firstName: String(firstName).trim(),
+    lastName: String(lastName).trim(),
+    isAccredited: true,
+    role: 'superadmin'
+  });
+
+  auditLedger.recordEvent('SUPERADMIN_SETUP', {
+    raNumber: updated.raNumber,
+    email: updated.email,
+    name: `${updated.firstName} ${updated.lastName}`,
+    role: 'superadmin'
+  }, { ip: req.ip });
+
+  res.status(201).json({
+    success: true,
+    voter: {
+      id: updated.id,
+      raNumber: updated.raNumber,
+      email: updated.email,
+      firstName: updated.firstName,
+      lastName: updated.lastName,
+      role: updated.role
+    }
+  });
+});
+
+// Gate for account activation: only emails already enrolled on the
+// electoral roll may create Firebase credentials. Unknown emails are denied.
+app.post('/api/auth/request-activation', (req: Request, res: Response) => {
+  const { email } = req.body;
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  if (!cleanEmail) {
+    return res.status(400).json({ error: 'EMAIL_REQUIRED', message: 'Please enter your email address.' });
+  }
+
+  const voter = db.getVoterByEmail(cleanEmail);
+  if (!voter) {
+    return res.status(404).json({
+      error: 'NOT_REGISTERED',
+      message: 'Access Denied. This email is not on the electoral roll. Contact the Electoral Committee to be enrolled.'
+    });
+  }
+
+  auditLedger.recordEvent('AUTH_ACTIVATION_REQUESTED', {
     raNumber: voter.raNumber,
     email: voter.email,
     name: `${voter.firstName} ${voter.lastName}`
   }, { ip: req.ip });
 
-  // The client triggers Firebase's passwordless email with this bound address
   res.json({
     success: true,
-    message: `A sign-in link has been dispatched to ${voter.email.replace(/(.{2})(.*)(?=@)/, '$1***')}.`,
-    email: voter.email,
-    voterName: `${voter.firstName} ${voter.lastName}`
+    voterName: `${voter.firstName} ${voter.lastName}`,
+    email: voter.email
   });
 });
 
-// Firebase passwordless email-link sign-in completion.
-// Verifies the Firebase ID token, resolves the bound voter, then issues the exclusive session.
+// Firebase email/password sign-in completion.
+// Verifies the Firebase ID token, resolves the enrolled voter by the
+// token email, then issues the exclusive single-device session.
+// Emails NOT on the electoral roll are denied — no self-registration.
 app.post('/api/auth/firebase-login', async (req: Request, res: Response) => {
   const { idToken, deviceInfo } = req.body;
   if (!idToken) {
@@ -576,7 +698,7 @@ app.post('/api/auth/firebase-login', async (req: Request, res: Response) => {
     if (!lookupRes.ok || !firebaseUser) {
       return res.status(401).json({
         error: 'INVALID_TOKEN',
-        message: 'The sign-in link is invalid, expired, or was already used.'
+        message: 'The sign-in credential is invalid or expired. Please sign in again.'
       });
     }
 
@@ -584,12 +706,12 @@ app.post('/api/auth/firebase-login', async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'NO_EMAIL', message: 'No email associated with this sign-in.' });
     }
 
-    // Map back to the voter registered under that email
+    // Map back to the voter enrolled under that email
     const voter = db.getVoterByEmail(firebaseUser.email);
     if (!voter) {
       return res.status(403).json({
         error: 'ACCESS_DENIED',
-        message: 'Access Denied. This email is not registered with the electoral roll.'
+        message: 'Access Denied. This email is not on the electoral roll. Registration is closed — contact the Electoral Committee.'
       });
     }
 
@@ -601,7 +723,7 @@ app.post('/api/auth/firebase-login', async (req: Request, res: Response) => {
       name: `${voter.firstName} ${voter.lastName}`,
       role: voter.role
     }, {
-      provider: 'firebase-email-link',
+      provider: 'firebase-email-password',
       deviceInfo: deviceInfo || req.headers['user-agent'],
       ip: req.ip,
       singleDeviceEnforced: true
@@ -797,7 +919,7 @@ app.get('/api/screening-criteria', (req: Request, res: Response) => {
   res.json(db.getScreeningCriteria(officeId));
 });
 
-app.post('/api/screening-criteria', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/screening-criteria', requireAuth, requirePermission('screeningCriteria'), (req: AuthenticatedRequest, res: Response) => {
   if (req.voter?.role !== 'superadmin' && req.voter?.role !== 'committee') {
     return res.status(403).json({ error: 'FORBIDDEN', message: 'Committee access required.' });
   }
@@ -817,7 +939,7 @@ app.post('/api/screening-criteria', requireAuth, (req: AuthenticatedRequest, res
   res.json(saved);
 });
 
-app.delete('/api/screening-criteria/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.delete('/api/screening-criteria/:id', requireAuth, requirePermission('screeningCriteria'), (req: AuthenticatedRequest, res: Response) => {
   if (req.voter?.role !== 'superadmin' && req.voter?.role !== 'committee') {
     return res.status(403).json({ error: 'FORBIDDEN', message: 'Committee access required.' });
   }
@@ -827,7 +949,7 @@ app.delete('/api/screening-criteria/:id', requireAuth, (req: AuthenticatedReques
   res.json({ success: deleted });
 });
 
-app.post('/api/candidates/:id/screen', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/candidates/:id/screen', requireAuth, requirePermission('screeningCriteria'), (req: AuthenticatedRequest, res: Response) => {
   if (req.voter?.role !== 'superadmin' && req.voter?.role !== 'committee') {
     return res.status(403).json({ error: 'FORBIDDEN', message: 'Committee access required.' });
   }
@@ -870,7 +992,7 @@ app.get('/api/agents', (_req: Request, res: Response) => {
   res.json(db.getAgents());
 });
 
-app.post('/api/agents', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/agents', requireAuth, requirePermission('agents'), (req: AuthenticatedRequest, res: Response) => {
   if (req.voter?.role !== 'superadmin' && req.voter?.role !== 'committee') {
     return res.status(403).json({ error: 'FORBIDDEN', message: 'Committee access required.' });
   }
@@ -900,7 +1022,7 @@ app.post('/api/agents', requireAuth, (req: AuthenticatedRequest, res: Response) 
   }
 });
 
-app.delete('/api/agents/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.delete('/api/agents/:id', requireAuth, requirePermission('agents'), (req: AuthenticatedRequest, res: Response) => {
   if (req.voter?.role !== 'superadmin' && req.voter?.role !== 'committee') {
     return res.status(403).json({ error: 'FORBIDDEN', message: 'Committee access required.' });
   }
@@ -920,7 +1042,7 @@ app.get('/api/observers', requireAuth, (req: AuthenticatedRequest, res: Response
   res.json(db.getObservers());
 });
 
-app.post('/api/observers', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/observers', requireAuth, requirePermission('observers'), (req: AuthenticatedRequest, res: Response) => {
   if (req.voter?.role !== 'superadmin' && req.voter?.role !== 'committee') {
     return res.status(403).json({ error: 'FORBIDDEN', message: 'Committee access required.' });
   }
@@ -944,7 +1066,7 @@ app.post('/api/observers', requireAuth, (req: AuthenticatedRequest, res: Respons
   res.status(201).json(newObs);
 });
 
-app.post('/api/observers/:id/regenerate-link', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/observers/:id/regenerate-link', requireAuth, requirePermission('observers'), (req: AuthenticatedRequest, res: Response) => {
   if (req.voter?.role !== 'superadmin' && req.voter?.role !== 'committee') {
     return res.status(403).json({ error: 'FORBIDDEN', message: 'Committee access required.' });
   }
@@ -964,7 +1086,7 @@ app.post('/api/observers/:id/regenerate-link', requireAuth, (req: AuthenticatedR
   }
 });
 
-app.delete('/api/observers/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.delete('/api/observers/:id', requireAuth, requirePermission('observers'), (req: AuthenticatedRequest, res: Response) => {
   if (req.voter?.role !== 'superadmin' && req.voter?.role !== 'committee') {
     return res.status(403).json({ error: 'FORBIDDEN', message: 'Committee access required.' });
   }
