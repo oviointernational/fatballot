@@ -45,6 +45,20 @@ export interface MagicLinkRequest {
   used: boolean;
 }
 
+// One-time 6-digit login code challenge. The code itself is generated and
+// emailed by Supabase Auth (signInWithOtp); this record only binds the
+// challenge to the voter's RA number, throttles re-requests and caps
+// verification attempts. devCodeHash is DEV-ONLY (no Supabase configured):
+// a locally generated code whose sha256 is stored for offline testing.
+export interface OtpChallenge {
+  email: string;
+  raNumber: string;
+  createdAt: string;
+  expiresAt: string;
+  attempts: number;
+  devCodeHash?: string;
+}
+
 export interface StoreData {
   settings: SiteSettings;
   offices: Office[];
@@ -55,6 +69,7 @@ export interface StoreData {
   votes: CastVote[];
   sessions: UserSession[];
   magicLinks: MagicLinkRequest[];
+  otpChallenges: OtpChallenge[];
   screeningCriteria: ScreeningCriteria[];
   candidateScreenings: CandidateScreening[];
   agents: ElectionAgent[];
@@ -170,6 +185,7 @@ export class Database {
       votes: parsed.votes ?? [...initialVotes],
       sessions: parsed.sessions ?? [],
       magicLinks: parsed.magicLinks ?? [],
+      otpChallenges: parsed.otpChallenges ?? [],
       screeningCriteria: parsed.screeningCriteria ?? [...initialScreeningCriteria],
       candidateScreenings: parsed.candidateScreenings ?? [],
       agents: parsed.agents ?? [...initialAgents],
@@ -887,6 +903,52 @@ export class Database {
     });
   }
 
+  // --- OTP login challenges (RA number -> emailed 6-digit code) ---
+  public createOtpChallenge(email: string, raNumber: string, devCodeHash?: string): OtpChallenge {
+    const cleanRA = raNumber.replace(/^RA-?/i, '').trim();
+    const cleanEmail = email.trim().toLowerCase();
+    // One active challenge per email; a re-request replaces the previous one.
+    this.data.otpChallenges = this.data.otpChallenges.filter(c => c.email !== cleanEmail);
+    const challenge: OtpChallenge = {
+      email: cleanEmail,
+      raNumber: cleanRA,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(), // 15 mins
+      attempts: 0,
+      ...(devCodeHash ? { devCodeHash } : {})
+    };
+    this.data.otpChallenges.push(challenge);
+    this.saveData();
+    return challenge;
+  }
+
+  public getOtpChallengeByRa(raNumber: string): OtpChallenge | undefined {
+    const cleanRA = raNumber.replace(/^RA-?/i, '').trim();
+    const found = this.data.otpChallenges.find(c => c.raNumber === cleanRA);
+    if (!found) return undefined;
+    if (new Date(found.expiresAt).getTime() < Date.now()) {
+      this.consumeOtpChallenge(found.email);
+      return undefined;
+    }
+    return found;
+  }
+
+  public bumpOtpAttempts(email: string): OtpChallenge | undefined {
+    const cleanEmail = email.trim().toLowerCase();
+    const found = this.data.otpChallenges.find(c => c.email === cleanEmail);
+    if (found) {
+      found.attempts += 1;
+      this.saveData();
+    }
+    return found;
+  }
+
+  public consumeOtpChallenge(email: string) {
+    const cleanEmail = email.trim().toLowerCase();
+    this.data.otpChallenges = this.data.otpChallenges.filter(c => c.email !== cleanEmail);
+    this.saveData();
+  }
+
   // --- Authentication & Single Device Session Management ---
   public createMagicLink(raNumber: string, email: string): MagicLinkRequest {
     const token = crypto.randomBytes(32).toString('hex');
@@ -933,8 +995,9 @@ export class Database {
   }
 
   /**
-   * Creates a single-device-exclusive session for a voter.
-   * Any existing sessions for the voter's RA Number are invalidated first.
+   * Creates a single-device-exclusive session for a voter, valid for 7 days.
+   * Any existing sessions for the voter's RA Number are invalidated first,
+   * so a login on a new device immediately logs out all other devices.
    */
   public createExclusiveSession(voter: Voter, deviceInfo?: string): string {
     // SINGLE DEVICE ENFORCEMENT: Invalidate any existing sessions for this RA Number!
@@ -942,14 +1005,14 @@ export class Database {
       s => s.raNumber.replace(/^RA-?/i, '').trim() !== voter.raNumber.replace(/^RA-?/i, '').trim()
     );
 
-    // Create new exclusive session token
+    // Create new exclusive session token (7-day lifetime)
     const sessionToken = crypto.randomBytes(40).toString('hex');
     const session: UserSession = {
       token: sessionToken,
       raNumber: voter.raNumber,
       userId: voter.id,
       createdAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // 24 hours
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7 days
       deviceInfo
     };
 
@@ -960,7 +1023,15 @@ export class Database {
   }
 
   public getSession(sessionToken: string): UserSession | undefined {
-    return this.data.sessions.find(s => s.token === sessionToken);
+    const found = this.data.sessions.find(s => s.token === sessionToken);
+    if (!found) return undefined;
+    // Enforce the 7-day lifetime on read; lazily prune expired sessions.
+    if (new Date(found.expiresAt).getTime() < Date.now()) {
+      this.data.sessions = this.data.sessions.filter(s => s.token !== sessionToken);
+      this.saveData();
+      return undefined;
+    }
+    return found;
   }
 
   public revokeSession(sessionToken: string) {

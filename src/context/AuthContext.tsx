@@ -1,21 +1,18 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { Voter } from '../types';
-import {
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  sendPasswordResetEmail,
-  signOut as firebaseSignOut
-} from 'firebase/auth';
-import { firebaseAuth, PASSWORD_RESET_REDIRECT_URL } from '../lib/firebase';
 
-// Supabase is no longer used on the client side; the backend persists via
-// server/supabase.ts with environment-configured credentials.
+// Supabase is used server-side only (persistence + email OTP delivery).
+// The browser never talks to Supabase directly and holds no Supabase keys.
 // This export is kept only if downstream code references it.
 export const supa = null;
 
 interface AuthResult {
   success: boolean;
   message: string;
+  maskedEmail?: string;
+  voterName?: string;
+  /** DEV-ONLY: returned when no email service is configured locally. */
+  devCode?: string;
 }
 
 interface AuthContextType {
@@ -25,40 +22,18 @@ interface AuthContextType {
   supersededError: string | null;
   setupRequired: boolean;
   refreshSetupStatus: () => Promise<void>;
-  login: (email: string, password: string) => Promise<AuthResult>;
-  activateAccount: (email: string, password: string) => Promise<AuthResult>;
-  requestPasswordReset: (email: string) => Promise<AuthResult>;
-  setupSuperadmin: (profile: { email: string; password: string; firstName: string; lastName: string }) => Promise<AuthResult>;
+  /** Step 1: enter RA number -> a 6-digit code is emailed to the registered address. */
+  requestLoginCode: (raNumber: string) => Promise<AuthResult>;
+  /** Step 2: enter the emailed 6-digit code -> signed in (7-day single-device session). */
+  verifyLoginCode: (raNumber: string, code: string) => Promise<AuthResult>;
+  /** First-to-register: claims the Superadmin seat, then starts the code flow. */
+  setupSuperadmin: (profile: { email: string; firstName: string; lastName: string }) => Promise<AuthResult>;
   logout: () => Promise<void>;
   clearSupersededError: () => void;
   quickLogin: (raNumber: string) => Promise<boolean>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
-
-function firebaseErrorMessage(err: any, fallback: string): string {
-  const code: string = err?.code || '';
-  switch (code) {
-    case 'auth/invalid-email':
-      return 'Please enter a valid email address.';
-    case 'auth/user-not-found':
-    case 'auth/wrong-password':
-    case 'auth/invalid-credential':
-      return 'Incorrect email or password. If you have not activated your account yet, use "Activate your account" below.';
-    case 'auth/email-already-in-use':
-      return 'This email is already activated. Sign in instead, or reset your password if you forgot it.';
-    case 'auth/weak-password':
-      return 'Password must be at least 6 characters.';
-    case 'auth/too-many-requests':
-      return 'Too many attempts. Please wait a few minutes and try again.';
-    case 'auth/operation-not-allowed':
-      return 'Email/password sign-in is not enabled for this Firebase project. Enable it under Authentication -> Sign-in method.';
-    case 'auth/network-request-failed':
-      return 'Network error. Check your connection and try again.';
-    default:
-      return err?.message || fallback;
-  }
-}
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<Voter | null>(null);
@@ -76,7 +51,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (res.status === 401) {
         const err = await res.json();
         if (err.error === 'SESSION_SUPERSEDED') {
-          setSupersededError('You have been logged out because your account was accessed from another device.');
+          setSupersededError('You have been logged out because your account was accessed from another device, or your 7-day session expired.');
         }
         setUser(null);
         setSessionToken(null);
@@ -123,104 +98,68 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [sessionToken, fetchCurrentUser]);
 
-  // Exchange a verified Firebase ID token for an exclusive backend session.
-  // The backend denies any email that is not enrolled on the electoral roll.
-  const finalizeSession = async (idToken: string, deviceInfo: string) => {
-    const res = await fetch('/api/auth/firebase-login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ idToken, deviceInfo })
-    });
-
-    const data = await res.json();
-    if (!res.ok) {
-      // Roll rejection: drop the Firebase session too so state stays clean.
-      await firebaseSignOut(firebaseAuth).catch(() => undefined);
-      throw new Error(data.message || 'Login failed.');
-    }
-
+  const applySession = (data: any) => {
     setUser(data.voter);
     setSessionToken(data.sessionToken);
     localStorage.setItem('fatballot_token', data.sessionToken);
     setSupersededError(null);
   };
 
-  // Standard sign-in for activated accounts.
-  const login = async (email: string, password: string): Promise<AuthResult> => {
-    const cleanEmail = email.trim().toLowerCase();
-    if (!cleanEmail || !password) {
-      return { success: false, message: 'Please enter your email and password.' };
+  const requestLoginCode = async (raNumber: string): Promise<AuthResult> => {
+    const cleanRA = raNumber.replace(/^RA-?/i, '').trim();
+    if (!cleanRA) {
+      return { success: false, message: 'Please enter your RA Number.' };
     }
     try {
-      const cred = await signInWithEmailAndPassword(firebaseAuth, cleanEmail, password);
-      const idToken = await cred.user.getIdToken();
-      await finalizeSession(idToken, navigator.userAgent);
-      return { success: true, message: 'Signed in successfully.' };
-    } catch (err: any) {
-      await firebaseSignOut(firebaseAuth).catch(() => undefined);
-      return { success: false, message: firebaseErrorMessage(err, 'Sign-in failed.') };
-    }
-  };
-
-  // First-time activation: the email must already be enrolled on the
-  // electoral roll by an administrator — no self-registration.
-  const activateAccount = async (email: string, password: string): Promise<AuthResult> => {
-    const cleanEmail = email.trim().toLowerCase();
-    if (!cleanEmail || !password) {
-      return { success: false, message: 'Please enter your email and choose a password.' };
-    }
-    if (password.length < 6) {
-      return { success: false, message: 'Password must be at least 6 characters.' };
-    }
-    try {
-      const gate = await fetch('/api/auth/request-activation', {
+      const res = await fetch('/api/auth/request-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: cleanEmail })
+        body: JSON.stringify({ raNumber: cleanRA, deviceInfo: navigator.userAgent })
       });
-      const gateData = await gate.json();
-      if (!gate.ok) {
-        return { success: false, message: gateData.message || 'This email is not on the electoral roll.' };
+      const data = await res.json();
+      if (!res.ok) {
+        return { success: false, message: data.message || 'Could not send login code.' };
       }
-
-      const cred = await createUserWithEmailAndPassword(firebaseAuth, cleanEmail, password);
-      const idToken = await cred.user.getIdToken();
-      await finalizeSession(idToken, navigator.userAgent);
-      return { success: true, message: `Welcome, ${gateData.voterName}. Your account is activated.` };
+      return {
+        success: true,
+        message: data.message,
+        maskedEmail: data.maskedEmail,
+        voterName: data.voterName,
+        devCode: data.devCode
+      };
     } catch (err: any) {
-      await firebaseSignOut(firebaseAuth).catch(() => undefined);
-      return { success: false, message: firebaseErrorMessage(err, 'Activation failed.') };
+      return { success: false, message: err.message || 'Network error occurred.' };
     }
   };
 
-  // Password reset for activated accounts (Firebase dispatches the email).
-  const requestPasswordReset = async (email: string): Promise<AuthResult> => {
-    const cleanEmail = email.trim().toLowerCase();
-    if (!cleanEmail) {
-      return { success: false, message: 'Please enter your email address.' };
+  const verifyLoginCode = async (raNumber: string, code: string): Promise<AuthResult> => {
+    const cleanRA = raNumber.replace(/^RA-?/i, '').trim();
+    if (!/^\d{6}$/.test(code.trim())) {
+      return { success: false, message: 'Please enter the 6-digit code sent to your email.' };
     }
     try {
-      await sendPasswordResetEmail(firebaseAuth, cleanEmail, {
-        url: PASSWORD_RESET_REDIRECT_URL()
+      const res = await fetch('/api/auth/verify-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ raNumber: cleanRA, code: code.trim(), deviceInfo: navigator.userAgent })
       });
-      return {
-        success: true,
-        message: 'If this email is activated, a password-reset link is on its way. Check your inbox (and spam).'
-      };
+      const data = await res.json();
+      if (!res.ok) {
+        return { success: false, message: data.message || 'Verification failed.' };
+      }
+      applySession(data);
+      return { success: true, message: 'Signed in successfully.' };
     } catch (err: any) {
-      return { success: false, message: firebaseErrorMessage(err, 'Could not send reset email.') };
+      return { success: false, message: err.message || 'Network error occurred.' };
     }
   };
 
   // First-to-register: claims the Superadmin seat on a fresh system, then
-  // creates the Firebase credential and signs in. Single-use by design.
-  const setupSuperadmin = async (profile: { email: string; password: string; firstName: string; lastName: string }): Promise<AuthResult> => {
+  // immediately requests the login code for RA-1001. Single-use by design.
+  const setupSuperadmin = async (profile: { email: string; firstName: string; lastName: string }): Promise<AuthResult> => {
     const cleanEmail = profile.email.trim().toLowerCase();
-    if (!cleanEmail || !profile.password || !profile.firstName.trim() || !profile.lastName.trim()) {
+    if (!cleanEmail || !profile.firstName.trim() || !profile.lastName.trim()) {
       return { success: false, message: 'Please complete all fields.' };
-    }
-    if (profile.password.length < 6) {
-      return { success: false, message: 'Password must be at least 6 characters.' };
     }
     try {
       const res = await fetch('/api/auth/setup-superadmin', {
@@ -236,33 +175,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!res.ok) {
         return { success: false, message: data.message || 'Setup failed.' };
       }
-
-      let cred;
-      try {
-        cred = await createUserWithEmailAndPassword(firebaseAuth, cleanEmail, profile.password);
-      } catch (err: any) {
-        if (err?.code === 'auth/email-already-in-use') {
-          cred = await signInWithEmailAndPassword(firebaseAuth, cleanEmail, profile.password);
-        } else {
-          throw err;
-        }
-      }
-      const idToken = await cred.user.getIdToken();
-      await finalizeSession(idToken, navigator.userAgent);
       await refreshSetupStatus();
-      return { success: true, message: 'Superadmin account claimed. You are signed in.' };
+      const codeRes = await requestLoginCode(data.voter.raNumber);
+      if (!codeRes.success) {
+        return { success: false, message: `Seat claimed for ${cleanEmail}, but the login code could not be sent: ${codeRes.message}` };
+      }
+      return { ...codeRes, message: `Superadmin seat claimed. ${codeRes.message}` };
     } catch (err: any) {
-      await firebaseSignOut(firebaseAuth).catch(() => undefined);
-      return { success: false, message: firebaseErrorMessage(err, 'Setup failed.') };
+      return { success: false, message: err.message || 'Setup failed.' };
     }
   };
 
   // Server-side bypass used by dev/test shortcuts in AdminPage.
-  // Creates an exclusive backend session directly for an RA number without Firebase.
+  // Creates an exclusive backend session directly for an RA number.
   // DISABLED in production builds — the server also rejects it there.
   const quickLogin = async (raNumber: string) => {
     if (import.meta.env.PROD) {
-      alert('Quick login is disabled in production. Please sign in with your email and password.');
+      alert('Quick login is disabled in production. Please sign in with your RA Number and emailed code.');
       return false;
     }
     try {
@@ -300,7 +229,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.error('Logout error', err);
       }
     }
-    await firebaseSignOut(firebaseAuth).catch(() => undefined);
     setUser(null);
     setSessionToken(null);
     localStorage.removeItem('fatballot_token');
@@ -317,9 +245,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         supersededError,
         setupRequired,
         refreshSetupStatus,
-        login,
-        activateAccount,
-        requestPasswordReset,
+        requestLoginCode,
+        verifyLoginCode,
         setupSuperadmin,
         logout,
         clearSupersededError,

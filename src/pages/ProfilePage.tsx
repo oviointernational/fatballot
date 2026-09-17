@@ -66,8 +66,8 @@ function formatEventTitle(block: AuditBlock): string {
       return "Committee: Status → Admin Removed";
     case "PDF_EXPORTED":
       return "Export: Status → PDF Generated";
-    case "AUTH_MAGIC_LINK_REQUESTED":
-      return "Sign-In: Status → Magic Link Sent";
+    case "AUTH_CODE_REQUESTED":
+      return "Sign-In: Status → Login Code Sent";
     case "AUTH_ACTIVATION_REQUESTED":
       return "Sign-In: Status → Account Activated";
     case "AUTH_LOGIN_SUCCESS":

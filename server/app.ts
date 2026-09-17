@@ -1,7 +1,9 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import path from 'path';
+import crypto from 'crypto';
 import { db } from './database';
+import { hasSupabase, getSupabaseAuthClient } from './supabase';
 import { auditLedger, AuditActor } from './auditLedger';
 
 const app = express();
@@ -9,8 +11,13 @@ const app = express();
 // (import.meta.url is undefined in CJS), so derive it from the process cwd.
 const FRONTEND_DIR = path.join(process.cwd(), 'dist');
 
-// Firebase web API key used to verify passwordless sign-in ID tokens server-side
-const FIREBASE_API_KEY = 'AIzaSyDBzRlGJfUZXU86t5xMg1Q18rdjBbXzsEA';
+function isProduction(): boolean {
+  return process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL);
+}
+
+function maskEmail(email: string): string {
+  return email.replace(/(.{2})(.*)(?=@)/, '$1***');
+}
 
 app.use(cors());
 app.use(express.json());
@@ -558,13 +565,15 @@ app.get('/api/ycec', (_req: Request, res: Response) => {
 });
 
 // ----------------------------------------------------
-// AUTHENTICATION (Firebase Email/Password + Single Device)
+// AUTHENTICATION (RA Number + Emailed 6-Digit Code, 7-Day Single Device)
 // ----------------------------------------------------
 // Registration is CLOSED: nobody can self-register. The electoral roll is
 // built exclusively by staff holding the 'registerUsers' permission, and the
 // very first account — the Superadmin — is claimed once via setup-superadmin
-// on a fresh system. Every other user then ACTIVATES with the email already
-// on the roll (request-activation) and signs in with email + password.
+// on a fresh system. Every voter then signs in with their RA number: the
+// server looks up the email registered to that RA number and dispatches a
+// one-time 6-digit code to it (Supabase Auth email OTP). Sessions last
+// 7 days and are single-device exclusive.
 
 // A fresh system = only the placeholder Superadmin, empty ballot box.
 // Once the seat is claimed (real name + real email), setup closes forever.
@@ -642,7 +651,8 @@ app.post('/api/auth/setup-superadmin', (req: Request, res: Response) => {
 });
 
 // Gate for account activation: only emails already enrolled on the
-// electoral roll may create Firebase credentials. Unknown emails are denied.
+// electoral roll may receive a login code. Unknown emails are denied.
+// (Kept for compatibility; the RA-number flow below is the primary gate.)
 app.post('/api/auth/request-activation', (req: Request, res: Response) => {
   const { email } = req.body;
   const cleanEmail = String(email || '').trim().toLowerCase();
@@ -658,7 +668,86 @@ app.post('/api/auth/request-activation', (req: Request, res: Response) => {
     });
   }
 
-  auditLedger.recordEvent('AUTH_ACTIVATION_REQUESTED', {
+  res.json({
+    success: true,
+    voterName: `${voter.firstName} ${voter.lastName}`,
+    raNumber: voter.raNumber,
+    maskedEmail: maskEmail(voter.email)
+  });
+});
+
+// RA number -> emailed 6-digit code (Supabase Auth OTP).
+// The voter enters their RA number; the server looks up the email address
+// registered to that RA number and dispatches a one-time numeric code to it.
+// Entering the code signs the voter in with an exclusive 7-day session.
+app.post('/api/auth/request-code', async (req: Request, res: Response) => {
+  const { raNumber } = req.body;
+  const cleanRA = String(raNumber || '').replace(/^RA-?/i, '').trim();
+  if (!cleanRA) {
+    return res.status(400).json({ error: 'RA_REQUIRED', message: 'Please enter your RA Number.' });
+  }
+
+  const voter = db.getVoterByRA(cleanRA);
+  if (!voter) {
+    return res.status(404).json({
+      error: 'VOTER_NOT_FOUND',
+      message: `Access Denied. No voter found with RA Number ${cleanRA}. Please contact the Electoral Committee.`
+    });
+  }
+
+  // Throttle: one code per 60 seconds per voter (protects the email quota).
+  const existing = db.getOtpChallengeByRa(cleanRA);
+  if (existing && new Date(existing.createdAt).getTime() > Date.now() - 60 * 1000) {
+    return res.status(429).json({
+      error: 'CODE_ALREADY_SENT',
+      message: `A code was already sent to ${maskEmail(voter.email)}. Please check your inbox and wait a minute before requesting another.`,
+      maskedEmail: maskEmail(voter.email)
+    });
+  }
+
+  // Deliver the code via Supabase Auth email OTP. Only voters on the roll
+  // ever reach this point, so no Supabase account can be minted for strangers.
+  if (hasSupabase()) {
+    try {
+      const sb = getSupabaseAuthClient();
+      const { error } = await sb.auth.signInWithOtp({ email: voter.email });
+      if (error) throw new Error(error.message);
+      db.createOtpChallenge(voter.email, voter.raNumber);
+    } catch (err: any) {
+      if (isProduction()) {
+        return res.status(502).json({
+          error: 'EMAIL_SEND_FAILED',
+          message: 'Could not dispatch the login code. Please try again shortly.'
+        });
+      }
+      // Dev fallback below (no email service reachable locally).
+    }
+  }
+
+  // DEV-ONLY fallback: with no Supabase configured locally there is no email
+  // service, so a code is generated in-process and returned in the response
+  // for testing. Never active in production.
+  let devCode: string | undefined;
+  if (!hasSupabase() && !isProduction()) {
+    devCode = String(Math.floor(100000 + Math.random() * 900000));
+    const devCodeHash = crypto.createHash('sha256').update(devCode).digest('hex');
+    db.createOtpChallenge(voter.email, voter.raNumber, devCodeHash);
+  } else if (!hasSupabase() && isProduction()) {
+    return res.status(503).json({
+      error: 'AUTH_UNAVAILABLE',
+      message: 'Email sign-in is not configured on the server. Contact the Electoral Committee.'
+    });
+  }
+
+  // If Supabase delivery succeeded, the challenge was already recorded above.
+  // If it threw in dev, record a dev challenge so verification still works.
+  if (hasSupabase() && !isProduction() && !db.getOtpChallengeByRa(cleanRA)) {
+    devCode = String(Math.floor(100000 + Math.random() * 900000));
+    const devCodeHash = crypto.createHash('sha256').update(devCode).digest('hex');
+    db.createOtpChallenge(voter.email, voter.raNumber, devCodeHash);
+  }
+
+  auditLedger.recordEvent('AUTH_CODE_REQUESTED', {
     raNumber: voter.raNumber,
     email: voter.email,
     name: `${voter.firstName} ${voter.lastName}`
@@ -666,100 +755,124 @@ app.post('/api/auth/request-activation', (req: Request, res: Response) => {
 
   res.json({
     success: true,
+    message: `A 6-digit login code was sent to ${maskEmail(voter.email)}. It expires in 15 minutes.`,
+    maskedEmail: maskEmail(voter.email),
     voterName: `${voter.firstName} ${voter.lastName}`,
-    email: voter.email
+    ...(devCode ? { devCode } : {})
   });
 });
 
-// Firebase email/password sign-in completion.
-// Verifies the Firebase ID token, resolves the enrolled voter by the
-// token email, then issues the exclusive single-device session.
-// Emails NOT on the electoral roll are denied — no self-registration.
-app.post('/api/auth/firebase-login', async (req: Request, res: Response) => {
-  const { idToken, deviceInfo } = req.body;
-  if (!idToken) {
-    return res.status(400).json({ error: 'TOKEN_REQUIRED', message: 'ID token is required.' });
+// Verifies the emailed 6-digit code and issues the exclusive 7-day session.
+// Max 5 attempts per code; a login elsewhere instantly ends this session.
+app.post('/api/auth/verify-code', async (req: Request, res: Response) => {
+  const { raNumber, code, deviceInfo } = req.body;
+  const cleanRA = String(raNumber || '').replace(/^RA-?/i, '').trim();
+  const cleanCode = String(code || '').trim();
+  if (!cleanRA || !/^\d{6}$/.test(cleanCode)) {
+    return res.status(400).json({ error: 'INVALID_CODE', message: 'Please enter the 6-digit code sent to your email.' });
   }
 
-  try {
-    // Validate the ID token against Firebase's identitytoolkit API using the web API key
-    const lookupRes = await fetch(
-      `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${FIREBASE_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ idToken })
-      }
-    );
+  const challenge = db.getOtpChallengeByRa(cleanRA);
+  if (!challenge) {
+    return res.status(401).json({
+      error: 'NO_CHALLENGE',
+      message: 'No active login code for this RA Number. Please request a new code.'
+    });
+  }
+  if (challenge.attempts >= 5) {
+    db.consumeOtpChallenge(challenge.email);
+    return res.status(429).json({
+      error: 'TOO_MANY_ATTEMPTS',
+      message: 'Too many wrong attempts. Please request a new code.'
+    });
+  }
 
-    const lookupData = await lookupRes.json();
-    const firebaseUser = lookupData?.users?.[0];
-
-    if (!lookupRes.ok || !firebaseUser) {
+  let verifiedEmail: string | null = null;
+  if (challenge.devCodeHash && !isProduction()) {
+    // DEV-ONLY verification path (see request-code).
+    const hash = crypto.createHash('sha256').update(cleanCode).digest('hex');
+    if (hash === challenge.devCodeHash) verifiedEmail = challenge.email;
+  } else {
+    try {
+      const sb = getSupabaseAuthClient();
+      const { data, error } = await sb.auth.verifyOtp({
+        email: challenge.email,
+        token: cleanCode,
+        type: 'email'
+      });
+      if (error || !data.user) throw new Error(error?.message || 'Verification failed.');
+      verifiedEmail = (data.user.email || '').trim().toLowerCase();
+    } catch (err: any) {
+      db.bumpOtpAttempts(challenge.email);
       return res.status(401).json({
-        error: 'INVALID_TOKEN',
-        message: 'The sign-in credential is invalid or expired. Please sign in again.'
+        error: 'INVALID_CODE',
+        message: 'Incorrect or expired code. Please check and try again.'
       });
     }
+  }
 
-    if (!firebaseUser.email) {
-      return res.status(401).json({ error: 'NO_EMAIL', message: 'No email associated with this sign-in.' });
-    }
+  if (!verifiedEmail) {
+    db.bumpOtpAttempts(challenge.email);
+    return res.status(401).json({
+      error: 'INVALID_CODE',
+      message: 'Incorrect or expired code. Please check and try again.'
+    });
+  }
 
-    // Map back to the voter enrolled under that email
-    const voter = db.getVoterByEmail(firebaseUser.email);
-    if (!voter) {
-      return res.status(403).json({
-        error: 'ACCESS_DENIED',
-        message: 'Access Denied. This email is not on the electoral roll. Registration is closed — contact the Electoral Committee.'
-      });
-    }
+  // The verified email must still belong to the challenged voter on the roll.
+  const voter = db.getVoterByEmail(verifiedEmail);
+  if (!voter || voter.raNumber.replace(/^RA-?/i, '').trim() !== challenge.raNumber) {
+    db.consumeOtpChallenge(challenge.email);
+    return res.status(403).json({
+      error: 'ACCESS_DENIED',
+      message: 'Access Denied. This credential is not on the electoral roll.'
+    });
+  }
 
-    const sessionToken = db.createExclusiveSession(voter, deviceInfo || req.headers['user-agent']);
+  db.consumeOtpChallenge(challenge.email);
+  const sessionToken = db.createExclusiveSession(voter, deviceInfo || req.headers['user-agent']);
 
-    auditLedger.recordEvent('AUTH_LOGIN_SUCCESS', {
+  auditLedger.recordEvent('AUTH_LOGIN_SUCCESS', {
+    raNumber: voter.raNumber,
+    email: voter.email,
+    name: `${voter.firstName} ${voter.lastName}`,
+    role: voter.role
+  }, {
+    provider: challenge.devCodeHash ? 'dev-code' : 'supabase-email-otp',
+    deviceInfo: deviceInfo || req.headers['user-agent'],
+    ip: req.ip,
+    singleDeviceEnforced: true,
+    sessionDays: 7
+  });
+
+  res.json({
+    success: true,
+    sessionToken,
+    voter: {
+      id: voter.id,
       raNumber: voter.raNumber,
       email: voter.email,
-      name: `${voter.firstName} ${voter.lastName}`,
-      role: voter.role
-    }, {
-      provider: 'firebase-email-password',
-      deviceInfo: deviceInfo || req.headers['user-agent'],
-      ip: req.ip,
-      singleDeviceEnforced: true
-    });
-
-    res.json({
-      success: true,
-      sessionToken,
-      voter: {
-        id: voter.id,
-        raNumber: voter.raNumber,
-        email: voter.email,
-        firstName: voter.firstName,
-        middleName: voter.middleName,
-        lastName: voter.lastName,
-        role: voter.role,
-        isAccredited: voter.isAccredited,
-        department: voter.department,
-        phone: voter.phone,
-        avatar: voter.avatar
-      }
-    });
-  } catch (err: any) {
-    res.status(400).json({ error: 'VERIFICATION_FAILED', message: err.message });
-  }
+      firstName: voter.firstName,
+      middleName: voter.middleName,
+      lastName: voter.lastName,
+      role: voter.role,
+      isAccredited: voter.isAccredited,
+      department: voter.department,
+      phone: voter.phone,
+      avatar: voter.avatar
+    }
+  });
 });
 
 // Dev / testing shortcut: creates an exclusive session directly for an RA number.
-// Powers the quick-login buttons in AdminPage without needing Firebase.
-// DISABLED in production — passwordless email-link sign-in is the only gate.
+// Powers the quick-login buttons in AdminPage.
+// DISABLED in production — the emailed 6-digit code is the only gate.
 app.post('/api/auth/dev-login', (req: Request, res: Response) => {
   const isProd = process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL);
   if (isProd) {
     return res.status(403).json({
       error: 'DEV_LOGIN_DISABLED',
-      message: 'Quick login is disabled in production. Please sign in with your RA Number email link.'
+      message: 'Quick login is disabled in production. Please sign in with your RA Number and emailed code.'
     });
   }
 
@@ -1164,7 +1277,7 @@ app.post('/api/audit-log/export-event', optionalAuth, (req: AuthenticatedRequest
 // Static assets (JS/CSS/images) from the Vite build
 app.use(express.static(FRONTEND_DIR));
 
-// SPA fallback: any non-API GET route (e.g. /login for the Firebase email link) serves index.html
+// SPA fallback: any non-API GET route serves index.html
 app.get(/^\/(?!api|ws).*/, (_req: Request, res: Response) => {
   res.sendFile(path.join(FRONTEND_DIR, 'index.html'));
 });

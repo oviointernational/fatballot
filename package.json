@@ -15,7 +15,6 @@
     "canvas-confetti": "^1.9.4",
     "cors": "^2.8.5",
     "express": "^4.21.2",
-    "firebase": "^12.19.0",
     "jspdf": "^3.0.4",
     "jspdf-autotable": "^5.0.2",
     "lucide-react": "^1.16.0",
