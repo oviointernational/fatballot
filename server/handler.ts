@@ -49,14 +49,25 @@ function interopDefault<T>(mod: any): T {
 }
 
 function sendJsonError(res: Response, status: number, error: string, message: string) {
+  // Prefer Express helpers when available, but fall back to raw Node APIs:
+  // if server modules failed to load, Express never patched the prototype.
   try {
     if (!res.headersSent) {
-      res.status(status).json({ error, message });
+      const r: any = res;
+      if (typeof r.status === 'function' && typeof r.json === 'function') {
+        r.status(status).json({ error, message });
+      } else {
+        r.statusCode = status;
+        r.setHeader('Content-Type', 'application/json');
+        r.end(JSON.stringify({ error, message }));
+      }
     }
   } catch {
     try {
-      if (!res.headersSent) {
-        res.status(status).end(JSON.stringify({ error, message }));
+      const r: any = res;
+      if (!r.headersSent) {
+        r.statusCode = status;
+        r.end(JSON.stringify({ error, message }));
       }
     } catch {
       // Last resort: the platform will return its own error page.

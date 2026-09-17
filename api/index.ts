@@ -9,7 +9,7 @@
 //    not application code (report the full page text back).
 async function handler(req: any, res: any) {
   const report: any = {
-    probe: 'fatballot-api-probe',
+    probe: 'fatballot-api-probe-v1',
     node: typeof process !== 'undefined' ? process.version : 'unknown',
     method: req?.method ?? null,
     url: req?.url ?? null,
@@ -17,18 +17,33 @@ async function handler(req: any, res: any) {
     steps: [] as string[]
   };
   const sendReport = (status: number) => {
+    // Raw Node APIs only (statusCode/setHeader/end): Express may never have
+    // loaded in this process, so res.status()/res.json() may not exist.
     try {
-      if (!res.headersSent) res.status(status).json(report);
-    } catch {
-      try {
-        if (!res.headersSent) res.status(status).end(JSON.stringify(report));
-      } catch {
-        // Give up; platform will answer instead.
+      if (!res.headersSent) {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify(report));
       }
+    } catch {
+      // Give up; platform will answer instead.
     }
   };
   try {
     report.steps.push('probe-enter');
+    // Direct fingerprint path: answers WITHOUT loading any server module,
+    // so it works even if server code is broken. Proves which deployment
+    // is live and that the entry + routing work.
+    const q = (req as any)?.query;
+    const qp = q?.__path;
+    const rawPath =
+      typeof qp === 'string' && qp ? qp : String(req?.url ?? '').split('?')[0];
+    report.resolvedPath = rawPath;
+    if (rawPath === '/api/__probe' || rawPath === '/__probe') {
+      report.steps.push('fingerprint-answered');
+      sendReport(200);
+      return;
+    }
     const mod: any = await import('../server/handler');
     report.steps.push('handler-module-loaded');
     let real: any = mod?.default;
