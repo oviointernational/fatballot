@@ -35,24 +35,39 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+interface ApiRead {
+  ok: boolean;
+  status: number;
+  data: any | null;
+  raw: string;
+}
+
 /**
- * Safely reads a JSON API response. If the server (or hosting platform)
- * answers with a non-JSON page — e.g. a gateway/proxy error document —
- * this returns null instead of throwing "Unexpected token ..." so callers
- * can show an actionable message.
+ * Reads an API response defensively. Hosting platforms sometimes answer with
+ * a non-JSON error document (proxy/gateway/function pages); the raw text is
+ * preserved so the UI can show exactly what the platform said instead of a
+ * bare "Unexpected token ..." syntax error.
  */
-async function readApiJson(res: Response): Promise<any | null> {
+async function readApiResponse(res: Response): Promise<ApiRead> {
+  let raw = '';
   try {
-    const text = await res.text();
-    if (!text) return null;
-    return JSON.parse(text);
+    raw = await res.text();
   } catch {
-    return null;
+    raw = '';
+  }
+  if (!raw) return { ok: res.ok, status: res.status, data: null, raw: '' };
+  try {
+    return { ok: res.ok, status: res.status, data: JSON.parse(raw), raw };
+  } catch {
+    return { ok: false, status: res.status, data: null, raw };
   }
 }
 
-function apiDownMessage(res: Response): string {
-  return `The server returned an unexpected response (HTTP ${res.status}). The API may be down or still deploying — please wait a minute and try again. If it persists, check /api/health.`;
+function platformErrorMessage(read: ApiRead): string {
+  const snippet = read.raw.replace(/\s+/g, ' ').trim().slice(0, 180);
+  return `The server returned an unexpected response (HTTP ${read.status}${
+    snippet ? `: "${snippet}"` : ''
+  }). The API may be down or still deploying — please wait a minute and try again. If it persists, open /api/health and send us what it shows.`;
 }
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -67,10 +82,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const res = await fetch('/api/auth/me', {
         headers: { 'x-session-token': token }
       });
+      const read = await readApiResponse(res);
 
       if (res.status === 401) {
-        const err = await readApiJson(res);
-        if (err?.error === 'SESSION_SUPERSEDED') {
+        if (read.data?.error === 'SESSION_SUPERSEDED') {
           setSupersededError('You have been logged out because your account was accessed from another device, or your 7-day session expired.');
         }
         setUser(null);
@@ -79,14 +94,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return;
       }
 
-      if (res.ok) {
-        const data = await readApiJson(res);
-        if (!data) {
-          console.error('Error fetching current user:', apiDownMessage(res));
-          setIsLoading(false);
-          return;
-        }
-        setUser(data);
+      if (read.ok && read.data) {
+        setUser(read.data);
+      } else if (!read.ok && !read.data) {
+        console.error('Error fetching current user:', platformErrorMessage(read));
+        setIsLoading(false);
+        return;
       } else {
         setUser(null);
         setSessionToken(null);
@@ -103,8 +116,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const res = await fetch('/api/auth/setup-status');
       if (res.ok) {
-        const data = await readApiJson(res);
-        if (data) setSetupRequired(Boolean(data.setupRequired));
+        const read = await readApiResponse(res);
+        if (read.data) setSetupRequired(Boolean(read.data.setupRequired));
       }
     } catch (err) {
       console.error('Error fetching setup status:', err);
@@ -141,19 +154,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ raNumber: cleanRA, deviceInfo: navigator.userAgent })
       });
-      const data = await readApiJson(res);
-      if (!data) {
-        return { success: false, message: apiDownMessage(res) };
+      const read = await readApiResponse(res);
+      if (!read.data) {
+        return { success: false, message: platformErrorMessage(read) };
       }
-      if (!res.ok) {
-        return { success: false, message: data.message || 'Could not send login code.' };
+      if (!read.ok) {
+        return { success: false, message: read.data.message || 'Could not send login code.' };
       }
       return {
         success: true,
-        message: data.message,
-        maskedEmail: data.maskedEmail,
-        voterName: data.voterName,
-        devCode: data.devCode
+        message: read.data.message,
+        maskedEmail: read.data.maskedEmail,
+        voterName: read.data.voterName,
+        devCode: read.data.devCode
       };
     } catch (err: any) {
       return { success: false, message: err.message || 'Network error occurred.' };
@@ -171,14 +184,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ raNumber: cleanRA, code: code.trim(), deviceInfo: navigator.userAgent })
       });
-      const data = await readApiJson(res);
-      if (!data) {
-        return { success: false, message: apiDownMessage(res) };
+      const read = await readApiResponse(res);
+      if (!read.data) {
+        return { success: false, message: platformErrorMessage(read) };
       }
-      if (!res.ok) {
-        return { success: false, message: data.message || 'Verification failed.' };
+      if (!read.ok) {
+        return { success: false, message: read.data.message || 'Verification failed.' };
       }
-      applySession(data);
+      applySession(read.data);
       return { success: true, message: 'Signed in successfully.' };
     } catch (err: any) {
       return { success: false, message: err.message || 'Network error occurred.' };
@@ -202,15 +215,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           lastName: profile.lastName.trim()
         })
       });
-      const data = await readApiJson(res);
-      if (!data) {
-        return { success: false, message: apiDownMessage(res) };
+      const read = await readApiResponse(res);
+      if (!read.data) {
+        return { success: false, message: platformErrorMessage(read) };
       }
-      if (!res.ok) {
-        return { success: false, message: data.message || 'Setup failed.' };
+      if (!read.ok) {
+        return { success: false, message: read.data.message || 'Setup failed.' };
       }
       await refreshSetupStatus();
-      const codeRes = await requestLoginCode(data.voter.raNumber);
+      const codeRes = await requestLoginCode(read.data.voter.raNumber);
       if (!codeRes.success) {
         return { success: false, message: `Seat claimed for ${cleanEmail}, but the login code could not be sent: ${codeRes.message}` };
       }
@@ -236,17 +249,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         body: JSON.stringify({ raNumber: cleanRA, deviceInfo: navigator.userAgent })
       });
 
-      const data = await readApiJson(res);
-      if (!data) {
-        throw new Error(apiDownMessage(res));
+      const read = await readApiResponse(res);
+      if (!read.data) {
+        throw new Error(platformErrorMessage(read));
       }
-      if (!res.ok) {
-        throw new Error(data.message || 'Quick login failed.');
+      if (!read.ok) {
+        throw new Error(read.data.message || 'Quick login failed.');
       }
 
-      setUser(data.voter);
-      setSessionToken(data.sessionToken);
-      localStorage.setItem('fatballot_token', data.sessionToken);
+      setUser(read.data.voter);
+      setSessionToken(read.data.sessionToken);
+      localStorage.setItem('fatballot_token', read.data.sessionToken);
       setSupersededError(null);
       return true;
     } catch (err: any) {
