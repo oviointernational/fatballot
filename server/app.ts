@@ -1272,6 +1272,41 @@ app.post('/api/audit-log/export-event', optionalAuth, (req: AuthenticatedRequest
 });
 
 // ----------------------------------------------------
+// HEALTH + API SAFETY NET
+// ----------------------------------------------------
+// Lightweight diagnostic: confirms the API function is alive, whether the
+// Supabase backend is configured, and server time. Open /api/health in a
+// browser when diagnosing production issues.
+app.get('/api/health', (_req: Request, res: Response) => {
+  res.json({
+    ok: true,
+    time: new Date().toISOString(),
+    supabaseConfigured: hasSupabase(),
+    production: isProduction()
+  });
+});
+
+// Safety net: every /api/* path that matches no route above returns JSON,
+// never Express's default HTML error page (which breaks res.json() clients
+// with "Unexpected token ..." syntax errors).
+app.use('/api', (_req: Request, res: Response) => {
+  res.status(404).json({
+    error: 'NOT_FOUND',
+    message: 'Unknown API endpoint.'
+  });
+});
+
+// Central error handler: serialize ALL downstream errors as JSON.
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  console.error('FatBallot API error:', err);
+  if (res.headersSent) return;
+  res.status(err?.status || 500).json({
+    error: 'INTERNAL_SERVER_ERROR',
+    message: err?.message || 'An unexpected server error occurred.'
+  });
+});
+
+// ----------------------------------------------------
 // PRODUCTION: Serve the built React frontend
 // ----------------------------------------------------
 // Static assets (JS/CSS/images) from the Vite build

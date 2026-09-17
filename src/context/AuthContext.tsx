@@ -35,6 +35,26 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+/**
+ * Safely reads a JSON API response. If the server (or hosting platform)
+ * answers with a non-JSON page — e.g. a gateway/proxy error document —
+ * this returns null instead of throwing "Unexpected token ..." so callers
+ * can show an actionable message.
+ */
+async function readApiJson(res: Response): Promise<any | null> {
+  try {
+    const text = await res.text();
+    if (!text) return null;
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function apiDownMessage(res: Response): string {
+  return `The server returned an unexpected response (HTTP ${res.status}). The API may be down or still deploying — please wait a minute and try again. If it persists, check /api/health.`;
+}
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<Voter | null>(null);
   const [sessionToken, setSessionToken] = useState<string | null>(() => localStorage.getItem('fatballot_token'));
@@ -49,8 +69,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
 
       if (res.status === 401) {
-        const err = await res.json();
-        if (err.error === 'SESSION_SUPERSEDED') {
+        const err = await readApiJson(res);
+        if (err?.error === 'SESSION_SUPERSEDED') {
           setSupersededError('You have been logged out because your account was accessed from another device, or your 7-day session expired.');
         }
         setUser(null);
@@ -60,7 +80,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       if (res.ok) {
-        const data = await res.json();
+        const data = await readApiJson(res);
+        if (!data) {
+          console.error('Error fetching current user:', apiDownMessage(res));
+          setIsLoading(false);
+          return;
+        }
         setUser(data);
       } else {
         setUser(null);
@@ -78,8 +103,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const res = await fetch('/api/auth/setup-status');
       if (res.ok) {
-        const data = await res.json();
-        setSetupRequired(Boolean(data.setupRequired));
+        const data = await readApiJson(res);
+        if (data) setSetupRequired(Boolean(data.setupRequired));
       }
     } catch (err) {
       console.error('Error fetching setup status:', err);
@@ -116,7 +141,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ raNumber: cleanRA, deviceInfo: navigator.userAgent })
       });
-      const data = await res.json();
+      const data = await readApiJson(res);
+      if (!data) {
+        return { success: false, message: apiDownMessage(res) };
+      }
       if (!res.ok) {
         return { success: false, message: data.message || 'Could not send login code.' };
       }
@@ -143,7 +171,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ raNumber: cleanRA, code: code.trim(), deviceInfo: navigator.userAgent })
       });
-      const data = await res.json();
+      const data = await readApiJson(res);
+      if (!data) {
+        return { success: false, message: apiDownMessage(res) };
+      }
       if (!res.ok) {
         return { success: false, message: data.message || 'Verification failed.' };
       }
@@ -171,7 +202,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           lastName: profile.lastName.trim()
         })
       });
-      const data = await res.json();
+      const data = await readApiJson(res);
+      if (!data) {
+        return { success: false, message: apiDownMessage(res) };
+      }
       if (!res.ok) {
         return { success: false, message: data.message || 'Setup failed.' };
       }
@@ -202,7 +236,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         body: JSON.stringify({ raNumber: cleanRA, deviceInfo: navigator.userAgent })
       });
 
-      const data = await res.json();
+      const data = await readApiJson(res);
+      if (!data) {
+        throw new Error(apiDownMessage(res));
+      }
       if (!res.ok) {
         throw new Error(data.message || 'Quick login failed.');
       }
