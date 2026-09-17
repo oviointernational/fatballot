@@ -36,7 +36,6 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useElection } from '../context/ElectionContext';
-import { VoterModal } from '../components/common/VoterModal';
 import { 
   SiteSettings, 
   Voter, 
@@ -979,20 +978,12 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
         </p>
         <div className="flex flex-col sm:flex-row items-center justify-center gap-2 pt-2">
           {!isProdBuild && (
-            <>
-              <button
-                onClick={() => quickLogin('1001')}
-                className="w-full sm:w-auto px-5 py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl shadow-md transition-all text-xs"
-              >
-                Login as SuperAdmin (RA-1001)
-              </button>
-              <button
-                onClick={() => quickLogin('1002')}
-                className="w-full sm:w-auto px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow-md transition-all text-xs"
-              >
-                Login as Committee (RA-1002)
-              </button>
-            </>
+            <button
+              onClick={() => quickLogin('1001')}
+              className="w-full sm:w-auto px-5 py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl shadow-md transition-all text-xs"
+            >
+              Login as SuperAdmin (RA-1001)
+            </button>
           )}
           <button
             onClick={() => onNavigate(isProdBuild ? 'login' : 'dashboard')}
@@ -1122,30 +1113,17 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
 
         <div className="flex items-center space-x-2 shrink-0">
           {!isProdBuild && (
-            <>
-              <button
-                type="button"
-                onClick={() => quickLogin('1001')}
-                className={`px-3 py-1.5 rounded-xl font-bold transition-all text-xs ${
-                  isSuperadmin
-                    ? 'bg-purple-600 text-white shadow-xs'
-                    : 'border border-gray-200 dark:border-[#1E2E4E] text-gray-600 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-slate-800'
-                }`}
-              >
-                SuperAdmin (RA-1001)
-              </button>
-              <button
-                type="button"
-                onClick={() => quickLogin('1002')}
-                className={`px-3 py-1.5 rounded-xl font-bold transition-all text-xs ${
-                  user?.raNumber === '1002'
-                    ? 'bg-indigo-600 text-white shadow-xs'
-                    : 'border border-gray-200 dark:border-[#1E2E4E] text-gray-600 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-slate-800'
-                }`}
-              >
-                Committee (RA-1002)
-              </button>
-            </>
+            <button
+              type="button"
+              onClick={() => quickLogin('1001')}
+              className={`px-3 py-1.5 rounded-xl font-bold transition-all text-xs ${
+                isSuperadmin
+                  ? 'bg-purple-600 text-white shadow-xs'
+                  : 'border border-gray-200 dark:border-[#1E2E4E] text-gray-600 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-slate-800'
+              }`}
+            >
+              SuperAdmin (RA-1001)
+            </button>
           )}
         </div>
       </div>

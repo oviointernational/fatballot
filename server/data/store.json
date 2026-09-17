@@ -4,8 +4,8 @@
     "aboutTitle": "Official 2026 Youth & Community Executive Elections",
     "aboutContent": "Welcome to the official digital voting platform for the 2026 General Elections. FatBallot is engineered to guarantee sovereign transparency, immutable election integrity, and seamless accessibility for all accredited voters. Every vote cast, accreditation processed, and ballot modification is cryptographically signed and permanently logged in our zero-tampering audit ledger. Please ensure your accreditation is active before proceeding to the ballot chamber.",
     "aboutImageUrl": "https://images.unsplash.com/photo-1540910419892-4a36d2c3266c?auto=format&fit=crop&w=1200&q=80",
-    "electionStartTime": "2026-09-17T12:42:57.836Z",
-    "electionEndTime": "2026-09-20T13:42:57.838Z",
+    "electionStartTime": "2026-09-17T13:06:38.222Z",
+    "electionEndTime": "2026-09-20T14:06:38.224Z",
     "contestantsCanViewVoters": true,
     "publicAuditLog": false,
     "permissions": {

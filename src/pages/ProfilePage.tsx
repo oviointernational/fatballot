@@ -159,7 +159,7 @@ export const ProfilePage: React.FC<{ onNavigate: (page: string) => void }> = ({ 
         </div>
         <h2 className="text-xl font-bold text-gray-900 dark:text-white">Sign In to View Voter Profile</h2>
         <p className="text-sm text-gray-500 dark:text-slate-400">
-          Sign in with your email and password to inspect your ballot record, accreditation credentials, and security ledger.
+          Sign in with your RA Number and emailed code to inspect your ballot record, accreditation credentials, and security ledger.
         </p>
         <button
           onClick={() => onNavigate('login')}
