@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useElection } from '../../context/ElectionContext';
+import { APP_VERSION } from '../../lib/version';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -157,6 +158,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
         <p className="text-[10px] text-gray-400 dark:text-slate-400 leading-tight">
           Single active device per registered RA. Tamper-evident ledger.
+        </p>
+        <p className="text-[10px] text-gray-300 dark:text-slate-600 leading-tight font-mono">
+          build {APP_VERSION}
         </p>
       </div>
     </aside>

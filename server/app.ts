@@ -4,6 +4,7 @@ import path from 'path';
 import { db } from './database';
 import { hasSupabase } from './supabase';
 import { auditLedger, AuditActor } from './auditLedger';
+import { APP_VERSION } from './version';
 import { Voter } from './mockData';
 
 const app = express();
@@ -1196,6 +1197,7 @@ app.post('/api/audit-log/export-event', optionalAuth, ah(async (req: Authenticat
 app.get('/api/health', (_req: Request, res: Response) => {
   res.json({
     ok: true,
+    version: APP_VERSION,
     time: new Date().toISOString(),
     supabaseConfigured: hasSupabase(),
     production: isProduction()
