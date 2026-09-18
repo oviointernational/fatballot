@@ -19,6 +19,7 @@ interface ElectionContextType {
   isElectionActive: boolean;
   hasElectionStarted: boolean;
   hasElectionEnded: boolean;
+  noElection: boolean;
 }
 
 const defaultSettings: SiteSettings = {
@@ -134,12 +135,13 @@ export const ElectionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   }, [fetchLive]);
 
   // Compute election status
+  const noElection = settings.electionMode === 'none';
   const now = new Date().getTime();
   const startTime = new Date(settings.electionStartTime).getTime();
   const endTime = new Date(settings.electionEndTime).getTime();
-  const hasElectionStarted = now >= startTime;
-  const hasElectionEnded = now > endTime;
-  const isElectionActive = hasElectionStarted && !hasElectionEnded;
+  const hasElectionStarted = !noElection && now >= startTime;
+  const hasElectionEnded = !noElection && now > endTime;
+  const isElectionActive = !noElection && hasElectionStarted && !hasElectionEnded;
 
   const auditActor = () => {
     if (!user) return {};
@@ -267,7 +269,8 @@ export const ElectionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         refreshAll,
         isElectionActive,
         hasElectionStarted,
-        hasElectionEnded
+        hasElectionEnded,
+        noElection
       }}
     >
       {children}

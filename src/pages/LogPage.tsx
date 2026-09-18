@@ -38,6 +38,10 @@ function formatEventTitle(block: AuditBlock): string {
       return "Observer: Status → Pass Issued";
     case "SETTINGS_UPDATED":
       return "Governance: Status → Settings Updated";
+    case "ELECTION_RESET":
+      return "Governance: Status → Election Reset (Ballots Wiped)";
+    case "ELECTION_VOIDED":
+      return "Governance: Status → Election Voided (No Election)";
     case "GENESIS_BLOCK":
       return "Ledger: Status → Genesis Initialized";
     default:
@@ -51,6 +55,9 @@ function formatOptionalDetail(block: AuditBlock): string | null {
   }
   if (block.details?.candidateName) {
     return `Contestant: ${block.details.candidateName}`;
+  }
+  if (block.details?.votesCleared != null) {
+    return `Ballots wiped: ${block.details.votesCleared}`;
   }
   if (block.details?.note) {
     return String(block.details.note);

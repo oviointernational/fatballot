@@ -1,8 +1,11 @@
 -- ============================================================================
 -- FatBallot — COMPLETE database schema (single file, direct-to-Supabase)
 -- ============================================================================
--- Run ONCE on a FRESH Supabase project:
---   Supabase Dashboard -> SQL Editor -> paste this whole file -> Run.
+-- Run in the Supabase Dashboard -> SQL Editor. This file is idempotent and
+-- SAFE TO RE-RUN any time: tables/views/functions use "if not exists" /
+-- "create or replace", triggers and RLS policies are dropped before being
+-- recreated, seeds use "on conflict do nothing", and the voters role
+-- constraint is refreshed so 'ycec' is always allowed.
 --
 -- Architecture: the browser talks DIRECTLY to Supabase with the public anon
 -- key. Every table is protected by Row Level Security. Logic that must not
@@ -29,23 +32,38 @@ create extension if not exists pgcrypto;
 
 -- --------------------------------------------------------------------------
 -- AUTH HELPER FUNCTIONS (security definer = bypass RLS, no recursion)
+-- NOTE: these are plpgsql so they can be created here, BEFORE the voters
+-- table exists below (sql-language bodies are validated at creation time).
 -- --------------------------------------------------------------------------
 create or replace function public.is_admin()
-returns boolean language sql stable security definer set search_path = public as
-$$ select exists (select 1 from public.voters where auth_uid = auth.uid() and role in ('committee', 'superadmin') and coalesce(is_active, true)) $$;
+returns boolean language plpgsql stable security definer set search_path = public as
+$$
+begin
+  return exists (select 1 from public.voters where auth_uid = auth.uid() and role in ('committee', 'superadmin') and coalesce(is_active, true));
+end;
+$$;
 
 create or replace function public.is_superadmin()
-returns boolean language sql stable security definer set search_path = public as
-$$ select exists (select 1 from public.voters where auth_uid = auth.uid() and role = 'superadmin' and coalesce(is_active, true)) $$;
+returns boolean language plpgsql stable security definer set search_path = public as
+$$
+begin
+  return exists (select 1 from public.voters where auth_uid = auth.uid() and role = 'superadmin' and coalesce(is_active, true));
+end;
+$$;
 
 -- RA number sign-in helper: resolves an RA number to the account email so the
 -- login form can accept EITHER "2567" or "you@example.com".
 create or replace function public.lookup_email_for_ra(p_ra_number integer)
-returns text language sql stable security definer set search_path = public as
-$$ select email from public.voters where ra_number = p_ra_number and coalesce(is_active, true) limit 1 $$;
+returns text language plpgsql stable security definer set search_path = public as
+$$
+begin
+  return (select email from public.voters where ra_number = p_ra_number and coalesce(is_active, true) limit 1);
+end;
+$$;
 
 -- --------------------------------------------------------------------------
 -- IDENTITY GUARD (RLS alone cannot compare old row to proposed row)
+-- The trigger is attached to public.voters AFTER the table is created below.
 -- --------------------------------------------------------------------------
 create or replace function public.protect_voter_identity()
 returns trigger language plpgsql security definer set search_path = public as
@@ -71,10 +89,6 @@ begin
   return new;
 end;
 $$;
-
-create trigger protect_voter_identity
-  before update on public.voters
-  for each row execute function public.protect_voter_identity();
 
 -- --------------------------------------------------------------------------
 -- SETTINGS (single JOSNB row; public read, committee write)
@@ -137,7 +151,7 @@ create table if not exists public.voters (
   middle_name       text not null default '',
   last_name         text not null,
   role              text not null default 'voter'
-                    check (role in ('voter', 'contestant', 'committee', 'superadmin')),
+                    check (role in ('voter', 'contestant', 'committee', 'ycec', 'superadmin')),
   is_accredited     boolean not null default false,
   is_screened       boolean not null default false,
   assigned_office_id text,
@@ -154,6 +168,12 @@ create table if not exists public.voters (
 create index if not exists idx_voters_email ON public.voters (email);
 create index if not exists idx_voters_role ON public.voters (role);
 
+-- Keep the role whitelist in sync even when this file is re-run over a DB
+-- whose voters table was created by an earlier version of the schema.
+alter table public.voters drop constraint if exists voters_role_check;
+alter table public.voters add constraint voters_role_check
+  check (role in ('voter', 'contestant', 'committee', 'ycec', 'superadmin'));
+
 -- Consume the registration-bank row once a voter account is created.
 create or replace function public.consume_registration_bank()
 returns trigger language plpgsql security definer set search_path = public as
@@ -165,9 +185,15 @@ begin
 end;
 $$;
 
+drop trigger if exists consume_registration_bank on public.voters;
 create trigger consume_registration_bank
   after insert on public.voters
   for each row execute function public.consume_registration_bank();
+
+drop trigger if exists protect_voter_identity on public.voters;
+create trigger protect_voter_identity
+  before update on public.voters
+  for each row execute function public.protect_voter_identity();
 
 -- --------------------------------------------------------------------------
 -- OFFICES (contested positions)
@@ -463,7 +489,9 @@ alter table public.observers enable row level security;
 alter table public.audit_log enable row level security;
 
 -- VOTERS
+drop policy if exists voters_select_all on public.voters;
 create policy voters_select_all on public.voters for select to authenticated using (coalesce(is_active, true));
+drop policy if exists voters_insert_self on public.voters;
 create policy voters_insert_self on public.voters for insert to authenticated with check (
   auth_uid = auth.uid()
   and role = 'voter'
@@ -473,33 +501,48 @@ create policy voters_insert_self on public.voters for insert to authenticated wi
   and exists (select 1 from public.registration_bank b
               where b.ra_number = ra_number and lower(b.email) = lower(email))
 );
+drop policy if exists voters_update_self on public.voters;
 create policy voters_update_self on public.voters for update to authenticated
   using (auth_uid = auth.uid())
   with check (auth_uid = auth.uid());
+drop policy if exists voters_update_admin on public.voters;
 create policy voters_update_admin on public.voters for update to authenticated
   using (is_admin() and (role <> 'superadmin' or is_superadmin()))
   with check (is_admin() and (role <> 'superadmin' or is_superadmin()));
+drop policy if exists voters_delete_admin on public.voters;
 create policy voters_delete_admin on public.voters for delete to authenticated
   using (is_admin() and (role <> 'superadmin' or is_superadmin()));
 
 -- REGISTRATION BANK (committee only)
+drop policy if exists bank_select_admin on public.registration_bank;
 create policy bank_select_admin on public.registration_bank for select to authenticated using (is_admin());
+drop policy if exists bank_insert_admin on public.registration_bank;
 create policy bank_insert_admin on public.registration_bank for insert to authenticated with check (is_admin());
+drop policy if exists bank_update_admin on public.registration_bank;
 create policy bank_update_admin on public.registration_bank for update to authenticated using (is_admin()) with check (is_admin());
+drop policy if exists bank_delete_admin on public.registration_bank;
 create policy bank_delete_admin on public.registration_bank for delete to authenticated using (is_admin());
 
 -- SETTINGS
+drop policy if exists settings_select_all on public.settings;
 create policy settings_select_all on public.settings for select to anon, authenticated using (true);
+drop policy if exists settings_update_admin on public.settings;
 create policy settings_update_admin on public.settings for update to authenticated using (is_admin()) with check (is_admin());
 
 -- OFFICES
+drop policy if exists offices_select_all on public.offices;
 create policy offices_select_all on public.offices for select to anon, authenticated using (true);
+drop policy if exists offices_insert_admin on public.offices;
 create policy offices_insert_admin on public.offices for insert to authenticated with check (is_admin());
+drop policy if exists offices_update_admin on public.offices;
 create policy offices_update_admin on public.offices for update to authenticated using (is_admin()) with check (is_admin());
+drop policy if exists offices_delete_admin on public.offices;
 create policy offices_delete_admin on public.offices for delete to authenticated using (is_admin());
 
 -- CANDIDATES (public read; committee writes; a contestant may claim their own seat)
+drop policy if exists candidates_select_all on public.candidates;
 create policy candidates_select_all on public.candidates for select to anon, authenticated using (true);
+drop policy if exists candidates_insert_self on public.candidates;
 create policy candidates_insert_self on public.candidates for insert to authenticated with check (
   exists (select 1 from public.voters v
           where v.id = voter_id
@@ -507,14 +550,19 @@ create policy candidates_insert_self on public.candidates for insert to authenti
             and v.role = 'contestant'
             and v.assigned_office_id = office_id)
 );
+drop policy if exists candidates_insert_admin on public.candidates;
 create policy candidates_insert_admin on public.candidates for insert to authenticated with check (is_admin());
+drop policy if exists candidates_update_admin on public.candidates;
 create policy candidates_update_admin on public.candidates for update to authenticated using (is_admin()) with check (is_admin());
+drop policy if exists candidates_delete_admin on public.candidates;
 create policy candidates_delete_admin on public.candidates for delete to authenticated using (is_admin());
 
 -- VOTES (own ballot; committee may inspect for audits; accredited gate in DB)
+drop policy if exists votes_select_own on public.votes;
 create policy votes_select_own on public.votes for select to authenticated
   using (exists (select 1 from public.voters v where v.auth_uid = auth.uid() and v.ra_number = voter_ra_number)
          or is_admin());
+drop policy if exists votes_insert_self on public.votes;
 create policy votes_insert_self on public.votes for insert to authenticated with check (
   exists (select 1 from public.voters v
           where v.auth_uid = auth.uid() and v.ra_number = voter_ra_number and v.is_accredited and coalesce(v.is_active, true))
@@ -522,6 +570,7 @@ create policy votes_insert_self on public.votes for insert to authenticated with
   and (choice = 'for' or choice = 'against' or (choice = 'candidate'
        and exists (select 1 from public.candidates c where c.id = candidate_id and c.office_id = office_id)))
 );
+drop policy if exists votes_update_self on public.votes;
 create policy votes_update_self on public.votes for update to authenticated
   using (exists (select 1 from public.voters v where v.auth_uid = auth.uid() and v.ra_number = voter_ra_number)
          or is_admin())
@@ -532,51 +581,80 @@ create policy votes_update_self on public.votes for update to authenticated
     and (choice = 'for' or choice = 'against' or (choice = 'candidate'
          and exists (select 1 from public.candidates c where c.id = candidate_id and c.office_id = office_id)))
   );
+drop policy if exists votes_delete_admin on public.votes;
 create policy votes_delete_admin on public.votes for delete to authenticated using (is_admin());
 
 -- TIMELINE / YCEC (public read; committee write; observers may read for their portal)
+drop policy if exists timeline_select_all on public.timeline;
 create policy timeline_select_all on public.timeline for select to anon, authenticated using (true);
+drop policy if exists timeline_insert_admin on public.timeline;
 create policy timeline_insert_admin on public.timeline for insert to authenticated with check (is_admin());
+drop policy if exists timeline_update_admin on public.timeline;
 create policy timeline_update_admin on public.timeline for update to authenticated using (is_admin()) with check (is_admin());
+drop policy if exists timeline_delete_admin on public.timeline;
 create policy timeline_delete_admin on public.timeline for delete to authenticated using (is_admin());
 
+drop policy if exists ycec_select_all on public.ycec_members;
 create policy ycec_select_all on public.ycec_members for select to anon, authenticated using (true);
+drop policy if exists ycec_insert_admin on public.ycec_members;
 create policy ycec_insert_admin on public.ycec_members for insert to authenticated with check (is_admin());
+drop policy if exists ycec_update_admin on public.ycec_members;
 create policy ycec_update_admin on public.ycec_members for update to authenticated using (is_admin()) with check (is_admin());
+drop policy if exists ycec_delete_admin on public.ycec_members;
 create policy ycec_delete_admin on public.ycec_members for delete to authenticated using (is_admin());
 
 -- SCREENING (public read; committee writes)
+drop policy if exists scr_select_all on public.screening_criteria;
 create policy scr_select_all on public.screening_criteria for select to anon, authenticated using (true);
+drop policy if exists scr_insert_admin on public.screening_criteria;
 create policy scr_insert_admin on public.screening_criteria for insert to authenticated with check (is_admin());
+drop policy if exists scr_update_admin on public.screening_criteria;
 create policy scr_update_admin on public.screening_criteria for update to authenticated using (is_admin()) with check (is_admin());
+drop policy if exists scr_delete_admin on public.screening_criteria;
 create policy scr_delete_admin on public.screening_criteria for delete to authenticated using (is_admin());
 
+drop policy if exists can_scr_select_all on public.candidate_screenings;
 create policy can_scr_select_all on public.candidate_screenings for select to anon, authenticated using (true);
+drop policy if exists can_scr_insert_admin on public.candidate_screenings;
 create policy can_scr_insert_admin on public.candidate_screenings for insert to authenticated with check (is_admin());
+drop policy if exists can_scr_update_admin on public.candidate_screenings;
 create policy can_scr_update_admin on public.candidate_screenings for update to authenticated using (is_admin()) with check (is_admin());
+drop policy if exists can_scr_delete_admin on public.candidate_screenings;
 create policy can_scr_delete_admin on public.candidate_screenings for delete to authenticated using (is_admin());
 
 -- AGENTS (committee only read/write)
+drop policy if exists agents_select_admin on public.agents;
 create policy agents_select_admin on public.agents for select to authenticated using (is_admin());
+drop policy if exists agents_insert_admin on public.agents;
 create policy agents_insert_admin on public.agents for insert to authenticated with check (is_admin());
+drop policy if exists agents_update_admin on public.agents;
 create policy agents_update_admin on public.agents for update to authenticated using (is_admin()) with check (is_admin());
+drop policy if exists agents_delete_admin on public.agents;
 create policy agents_delete_admin on public.agents for delete to authenticated using (is_admin());
 
 -- OBSERVERS (committee manages; tokens are never publicly readable)
+drop policy if exists observers_select_admin on public.observers;
 create policy observers_select_admin on public.observers for select to authenticated using (is_admin());
+drop policy if exists observers_insert_admin on public.observers;
 create policy observers_insert_admin on public.observers for insert to authenticated with check (is_admin());
+drop policy if exists observers_update_admin on public.observers;
 create policy observers_update_admin on public.observers for update to authenticated using (is_admin()) with check (is_admin());
+drop policy if exists observers_delete_admin on public.observers;
 create policy observers_delete_admin on public.observers for delete to authenticated using (is_admin());
 
 -- AUDIT LOG (committee reads; everyone authenticates through append_audit RPC;
 -- the my_audit view exposes your own trail; direct inserts are forbidden)
+drop policy if exists audit_select_admin on public.audit_log;
 create policy audit_select_admin on public.audit_log for select to authenticated using (is_admin());
+drop policy if exists audit_select_own on public.audit_log;
 create policy audit_select_own on public.audit_log for select to authenticated
   using (actor->>'raNumber' = (select ra_number::text from public.voters where auth_uid = auth.uid()));
 -- When the committee enables the public audit log, every signed-in member may read the full chain.
+drop policy if exists audit_select_public on public.audit_log;
 create policy audit_select_public on public.audit_log for select to authenticated
   using ((select data->>'publicAuditLog' from public.settings where id = 1) = 'true');
 -- Commissioned agents may monitor every audit entry that touches their candidate.
+drop policy if exists audit_select_agent on public.audit_log;
 create policy audit_select_agent on public.audit_log for select to authenticated
   using (exists (
     select 1 from public.agents a

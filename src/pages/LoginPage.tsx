@@ -28,7 +28,11 @@ export const LoginPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
 
     const clean = identifier.trim();
     if (!clean) {
-      setErrorMsg('Please enter your email or RA number.');
+      setErrorMsg('Please enter your RA number.');
+      return;
+    }
+    if (!/^\d+$/.test(clean)) {
+      setErrorMsg('RA number must contain only digits.');
       return;
     }
     if (!password) {
@@ -62,7 +66,7 @@ export const LoginPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
             Sign In to {settings.siteName || 'FatBallot'}
           </h1>
           <p className="text-xs text-gray-500 dark:text-slate-400 max-w-sm mx-auto">
-            Official E-Ballot Portal • Secure Email & Password Sign-In
+            Official E-Ballot Portal • Secure RA & Password Sign-In
           </p>
         </div>
 
@@ -87,19 +91,21 @@ export const LoginPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
               <label className="block text-xs font-bold text-gray-700 dark:text-slate-300 mb-2">
-                Email Address or RA Number
+                RA Number
               </label>
               <input
                 type="text"
                 required
                 autoFocus
-                placeholder="you@example.com  (or RA-3001)"
+                inputMode="numeric"
+                maxLength={10}
+                placeholder="e.g. 3001"
                 value={identifier}
-                onChange={(e) => setIdentifier(e.target.value)}
-                className={inputCls}
+                onChange={(e) => setIdentifier(e.target.value.replace(/[^0-9]/g, ''))}
+                className={`${inputCls} font-mono tracking-wider`}
               />
               <p className="text-[11px] text-gray-400 dark:text-slate-400 mt-1.5">
-                Use the email you registered with. Your RA Number works too.
+                Enter the RA number from your voter registration. Only numeric characters are accepted.
               </p>
             </div>
 

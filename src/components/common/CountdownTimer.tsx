@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Clock, AlertCircle, CheckCircle } from 'lucide-react';
+import { Clock, AlertCircle, CheckCircle, Ban } from 'lucide-react';
 import { useElection } from '../../context/ElectionContext';
 
 interface TimeLeft {
@@ -10,7 +10,7 @@ interface TimeLeft {
 }
 
 export const CountdownTimer: React.FC<{ compact?: boolean }> = ({ compact = false }) => {
-  const { settings, hasElectionStarted, hasElectionEnded, isElectionActive } = useElection();
+  const { settings, hasElectionStarted, hasElectionEnded, isElectionActive, noElection } = useElection();
   const [timeLeft, setTimeLeft] = useState<TimeLeft>({ days: 0, hours: 0, minutes: 0, seconds: 0 });
 
   useEffect(() => {
@@ -39,6 +39,16 @@ export const CountdownTimer: React.FC<{ compact?: boolean }> = ({ compact = fals
     const interval = setInterval(calculateTime, 1000);
     return () => clearInterval(interval);
   }, [settings.electionStartTime, settings.electionEndTime, hasElectionStarted]);
+
+  // No election is configured at all: no countdown, no "ended" container.
+  if (noElection) {
+    return (
+      <div className="flex items-center space-x-2 px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-900/60 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-800">
+        <Ban className="w-5 h-5 shrink-0" />
+        <span className="font-semibold text-sm">No Election Scheduled</span>
+      </div>
+    );
+  }
 
   // If election has ended
   if (hasElectionEnded) {

@@ -33,7 +33,8 @@ import {
   Play,
   Square,
   Zap,
-  KeyRound
+  KeyRound,
+  Ban
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useElection } from '../context/ElectionContext';
@@ -93,6 +94,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
   const [voterSearchForCommittee, setVoterSearchForCommittee] = useState('');
   const [addingCommittee, setAddingCommittee] = useState(false);
   const [committeeFeedback, setCommitteeFeedback] = useState<string | null>(null);
+  const [appointmentRole, setAppointmentRole] = useState<'committee' | 'ycec'>('committee');
 
   // Auto-redirect away from Superadmin-only tabs if user is committee admin
   useEffect(() => {
@@ -135,12 +137,31 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
   const [publicAuditLog, setPublicAuditLog] = useState(settings.publicAuditLog);
   const [savingSettings, setSavingSettings] = useState(false);
   const [settingsFeedback, setSettingsFeedback] = useState<string | null>(null);
+
+  // Reset-election / end-election modals (SuperAdmin password re-verification)
+  const [showResetElectionModal, setShowResetElectionModal] = useState(false);
+  const [resetElectionStart, setResetElectionStart] = useState('');
+  const [resetElectionHours, setResetElectionHours] = useState('72');
+  const [resetElectionPassword, setResetElectionPassword] = useState('');
+  const [resetElectionError, setResetElectionError] = useState<string | null>(null);
+  const [resettingElection, setResettingElection] = useState(false);
+
+  const [showEndElectionModal, setShowEndElectionModal] = useState(false);
+  const [endElectionPassword, setEndElectionPassword] = useState('');
+  const [endElectionError, setEndElectionError] = useState<string | null>(null);
+  const [endingElection, setEndingElection] = useState(false);
+
+  const [showNoElectionModal, setShowNoElectionModal] = useState(false);
+  const [noElectionPassword, setNoElectionPassword] = useState('');
+  const [noElectionError, setNoElectionError] = useState<string | null>(null);
+  const [voidingElection, setVoidingElection] = useState(false);
   
   // Election status computation (local, mirrors ElectionContext logic)
   const now = new Date().getTime();
+  const noElection = settings.electionMode === 'none';
   const electionStart = new Date(settings.electionStartTime).getTime();
   const electionEnd = new Date(settings.electionEndTime).getTime();
-  const isElectionActiveNow = now >= electionStart && now <= electionEnd;
+  const isElectionActiveNow = !noElection && now >= electionStart && now <= electionEnd;
 
   // Tab 2: Users
   const [userSearch, setUserSearch] = useState('');
@@ -230,7 +251,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
       if (!obsRes.error) setObservers((obsRes.data || []).map(mapObserverRow));
       if (!critRes.error) setScreeningCriteria((critRes.data || []).map(mapScreeningCriteriaRow));
       if (!timeRes.error) setTimelineItems((timeRes.data || []).map(mapTimelineRow));
-      setCommitteeAdmins((votersRes.data || []).map(mapVoterRow).filter(v => v.role === 'committee'));
+      setCommitteeAdmins((votersRes.data || []).map(mapVoterRow).filter(v => v.role === 'committee' || v.role === 'ycec'));
     } catch (e) {
       console.error(e);
     }
@@ -252,38 +273,58 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
   // ACTION HANDLERS
   // ----------------------------------------------------
 
-  // Committee Admin Handlers
+  // Committee Admin / YCEC Commissioner Handlers
   const handleAddCommitteeAdmins = async (e: React.FormEvent) => {
     e.preventDefault();
     if (selectedVoterIdsForCommittee.length === 0) return;
 
     setAddingCommittee(true);
     try {
+      const targetRole: 'committee' | 'ycec' = appointmentRole;
+      const selected = voters.filter(v => selectedVoterIdsForCommittee.includes(v.id));
+
       const { error } = await supabase
         .from('voters')
-        .update({ role: 'committee' })
+        .update({ role: targetRole })
         .in('id', selectedVoterIdsForCommittee);
 
       if (!error) {
-        setCommitteeFeedback(`${selectedVoterIdsForCommittee.length} officer(s) appointed to Committee!`);
+        if (targetRole === 'ycec') {
+          const rows = selected.map(v => ({
+            id: `ycec-${v.id}`,
+            name: `${v.firstName} ${v.middleName ? v.middleName + ' ' : ''}${v.lastName}`,
+            role: 'YCEC Commissioner',
+            email: v.email,
+            phone: v.phone || '',
+            avatar: v.avatar || '',
+            tenure: ''
+          }));
+          await supabase.from('ycec_members').upsert(rows, { onConflict: 'id' });
+          setCommitteeFeedback(`${selectedVoterIdsForCommittee.length} officer(s) appointed as YCEC Commissioner(s)!`);
+          audit('YCEC_COMMISSIONER_APPOINTED', { voterIds: selectedVoterIdsForCommittee });
+        } else {
+          setCommitteeFeedback(`${selectedVoterIdsForCommittee.length} officer(s) appointed to Committee!`);
+          audit('COMMITTEE_ADMINS_APPOINTED', { voterIds: selectedVoterIdsForCommittee });
+        }
         setTimeout(() => setCommitteeFeedback(null), 4000);
         setShowAddCommitteeModal(false);
         setSelectedVoterIdsForCommittee([]);
-        audit('COMMITTEE_ADMINS_APPOINTED', { voterIds: selectedVoterIdsForCommittee });
         fetchAllData();
       } else {
-        alert(error.message || 'Failed to appoint committee administrators.');
+        alert(error.message || 'Failed to appoint officers.');
       }
     } catch (err) {
       console.error(err);
-      alert('Network error appointing committee administrators.');
+      alert('Network error appointing officers.');
     } finally {
       setAddingCommittee(false);
     }
   };
 
   const handleRemoveCommitteeAdmin = async (voterId: string) => {
-    if (!confirm('Are you sure you want to remove this officer from the Electoral Committee?')) return;
+    const officer = committeeAdmins.find(v => v.id === voterId);
+    const label = officer?.role === 'ycec' ? 'YCEC Commissioner' : 'Electoral Committee officer';
+    if (!confirm(`Are you sure you want to remove this officer (${label})?`)) return;
     try {
       const { error } = await supabase
         .from('voters')
@@ -291,12 +332,17 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
         .eq('id', voterId);
 
       if (!error) {
-        setCommitteeFeedback('Officer removed from Committee.');
+        if (officer?.role === 'ycec') {
+          await supabase.from('ycec_members').delete().eq('id', `ycec-${voterId}`);
+          audit('YCEC_COMMISSIONER_REMOVED', { voterId });
+        } else {
+          audit('COMMITTEE_ADMIN_REMOVED', { voterId });
+        }
+        setCommitteeFeedback('Officer removed.');
         setTimeout(() => setCommitteeFeedback(null), 4000);
-        audit('COMMITTEE_ADMIN_REMOVED', { voterId });
         fetchAllData();
       } else {
-        alert(error.message || 'Failed to remove committee administrator.');
+        alert(error.message || 'Failed to remove officer.');
       }
     } catch (err) {
       console.error(err);
@@ -994,7 +1040,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
     setSavingSettings(true);
     const nowISO = new Date().toISOString();
     try {
-      const ok = await updateSettings({ electionStartTime: nowISO });
+      const ok = await updateSettings({ electionStartTime: nowISO, electionMode: undefined });
       if (ok) {
         setStartTime(nowISO.slice(0, 16));
         setSettingsFeedback('Election started immediately!');
@@ -1009,28 +1055,143 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
     }
   };
 
+  const verifySuperadminPassword = async (password: string): Promise<string | null> => {
+    if (!user?.email) return 'Session email unavailable.';
+    const { error } = await supabase.auth.signInWithPassword({ email: user.email, password });
+    return error ? 'Incorrect password.' : null;
+  };
+
+  // Empties the ballot box entirely and returns how many ballots were removed.
+  const clearAllVotes = async (): Promise<number> => {
+    const { data, error } = await supabase.from('votes').delete().neq('id', '').select('id');
+    if (error) {
+      console.error('Failed to clear votes:', error);
+      return 0;
+    }
+    return data?.length ?? 0;
+  };
+
+  const handleResetElection = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isSuperadmin || !resetElectionStart) return;
+    setResetElectionError(null);
+    setResettingElection(true);
+
+    try {
+      const err = await verifySuperadminPassword(resetElectionPassword);
+      if (err) { setResetElectionError(err); setResettingElection(false); return; }
+
+      const startISO = new Date(resetElectionStart).toISOString();
+      const hours = Math.max(1, Number(resetElectionHours) || 72);
+      const endISO = new Date(new Date(resetElectionStart).getTime() + hours * 3600000).toISOString();
+
+      const ok = await updateSettings({
+        electionStartTime: startISO,
+        electionEndTime: endISO,
+        electionMode: undefined
+      });
+      if (ok) {
+        // Reset as brand new: wipe every cast ballot so the new ballot starts fresh.
+        const votesCleared = await clearAllVotes();
+        setStartTime(startISO.slice(0, 16));
+        setEndTime(endISO.slice(0, 16));
+        setSettingsFeedback(
+          votesCleared > 0
+            ? `Election timer reset — ${votesCleared} prior ballot(s) wiped.`
+            : 'Election timer has been completely reset!'
+        );
+        setTimeout(() => setSettingsFeedback(null), 4000);
+        audit('ELECTION_RESET', { newStartTime: startISO, newEndTime: endISO, durationHours: hours, votesCleared });
+        setShowResetElectionModal(false);
+        setResetElectionPassword('');
+        refreshAll();
+      } else {
+        setResetElectionError('Failed to save settings.');
+      }
+    } catch (err: any) {
+      setResetElectionError(err.message || 'Network error.');
+    } finally {
+      setResettingElection(false);
+    }
+  };
+
   const handleEndElection = async () => {
     if (!isSuperadmin) return;
-    setSavingSettings(true);
-    const nowISO = new Date().toISOString();
+    setShowEndElectionModal(true);
+    setEndElectionPassword('');
+    setEndElectionError(null);
+  };
+
+  const confirmEndElection = async () => {
+    if (!isSuperadmin) return;
+    setEndingElection(true);
+    setEndElectionError(null);
     try {
+      const err = await verifySuperadminPassword(endElectionPassword);
+      if (err) { setEndElectionError(err); setEndingElection(false); return; }
+
+      const nowISO = new Date().toISOString();
       const ok = await updateSettings({ electionEndTime: nowISO });
       if (ok) {
         setEndTime(nowISO.slice(0, 16));
-        setSettingsFeedback('Election ended immediately!');
+        setSettingsFeedback('Election ended successfully!');
         setTimeout(() => setSettingsFeedback(null), 4000);
+        audit('ELECTION_ENDED', {});
+        setShowEndElectionModal(false);
         refreshAll();
+      } else {
+        setEndElectionError('Failed to end election.');
       }
-    } catch (err) {
-      console.error(err);
-      alert('Failed to end election.');
+    } catch (err: any) {
+      setEndElectionError(err.message || 'Network error.');
     } finally {
-      setSavingSettings(false);
+      setEndingElection(false);
+    }
+  };
+
+  const handleNoElectionClick = () => {
+    if (!isSuperadmin) return;
+    setShowNoElectionModal(true);
+    setNoElectionPassword('');
+    setNoElectionError(null);
+  };
+
+  const confirmNoElection = async () => {
+    if (!isSuperadmin) return;
+    setVoidingElection(true);
+    setNoElectionError(null);
+    try {
+      const err = await verifySuperadminPassword(noElectionPassword);
+      if (err) { setNoElectionError(err); setVoidingElection(false); return; }
+
+      const ok = await updateSettings({ electionMode: 'none' });
+      if (ok) {
+        // With no election at all, prior ballots must not linger or count.
+        const votesCleared = await clearAllVotes();
+        setSettingsFeedback(
+          votesCleared > 0
+            ? `Election voided — ${votesCleared} prior ballot(s) wiped.`
+            : 'Election set to NO ELECTION.'
+        );
+        setTimeout(() => setSettingsFeedback(null), 4000);
+        audit('ELECTION_VOIDED', { votesCleared });
+        setShowNoElectionModal(false);
+        setNoElectionPassword('');
+        refreshAll();
+      } else {
+        setNoElectionError('Failed to save election mode.');
+      }
+    } catch (err: any) {
+      setNoElectionError(err.message || 'Network error.');
+    } finally {
+      setVoidingElection(false);
     }
   };
 
   // Committee Admin Selection Helpers
-  const availableVotersForCommittee = voters.filter(v => v.role !== 'committee' && v.role !== 'superadmin');
+  const availableVotersForCommittee = voters.filter(v =>
+    v.role !== 'committee' && v.role !== 'superadmin' && (appointmentRole === 'ycec' ? v.role !== 'ycec' : true)
+  );
   const filteredVotersForCommittee = availableVotersForCommittee.filter(v =>
     `${v.firstName} ${v.lastName}`.toLowerCase().includes(voterSearchForCommittee.toLowerCase()) ||
     v.raNumber.toLowerCase().includes(voterSearchForCommittee.toLowerCase()) ||
@@ -1417,11 +1578,29 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                         <Square className="w-4 h-4" />
                         <span>End Election Now</span>
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowResetElectionModal(true)}
+                        disabled={savingSettings}
+                        className="flex items-center space-x-2 px-4 py-2.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl shadow-sm transition-all text-xs"
+                      >
+                        <RefreshCw className="w-4 h-4" />
+                        <span>Reset Election Timer</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleNoElectionClick}
+                        disabled={savingSettings || noElection}
+                        className="flex items-center space-x-2 px-4 py-2.5 bg-slate-600 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl shadow-sm transition-all text-xs"
+                      >
+                        <Ban className="w-4 h-4" />
+                        <span>No Election</span>
+                      </button>
                     </div>
                     <div className="flex items-center space-x-2 text-[11px]">
-                      <span className={`w-2 h-2 rounded-full ${isElectionActiveNow ? 'bg-emerald-500' : 'bg-gray-400'}`} />
-                      <span className={isElectionActiveNow ? 'text-emerald-600 dark:text-emerald-400 font-semibold' : 'text-gray-500 dark:text-slate-400'}>
-                        {isElectionActiveNow ? 'Election is LIVE' : 'Election is INACTIVE'}
+                      <span className={`w-2 h-2 rounded-full ${noElection ? 'bg-slate-400' : isElectionActiveNow ? 'bg-emerald-500' : 'bg-gray-400'}`} />
+                      <span className={noElection ? 'text-slate-500 dark:text-slate-400 font-semibold' : isElectionActiveNow ? 'text-emerald-600 dark:text-emerald-400 font-semibold' : 'text-gray-500 dark:text-slate-400'}>
+                        {noElection ? 'Election is NOT SCHEDULED (No Election mode)' : isElectionActiveNow ? 'Election is LIVE' : 'Election is INACTIVE'}
                       </span>
                     </div>
                   </div>
@@ -1474,6 +1653,227 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
         </div>
       )}
 
+      {/* Reset Election Modal (SuperAdmin password re-verification) */}
+      {showResetElectionModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+          <div className="bg-white dark:bg-[#0F172A] border border-gray-200 dark:border-[#1E2E4E] rounded-3xl p-6 max-w-md w-full shadow-2xl animate-fadeIn space-y-4">
+            <div className="flex items-center justify-between border-b border-gray-100 dark:border-[#1E2E4E] pb-3">
+              <div>
+                <h3 className="font-bold text-gray-900 dark:text-white text-base flex items-center gap-2">
+                  <RefreshCw className="w-5 h-5 text-amber-500" />
+                  <span>Reset Election Timer</span>
+                </h3>
+                <p className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">
+                  Set a brand-new election day &amp; time, as if voting has not started.
+                  A new ballot begins empty: every previously cast vote is wiped from the ledger.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowResetElectionModal(false)}
+                className="p-1.5 text-gray-400 hover:text-gray-600 rounded-xl"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {resetElectionError && (
+              <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-300 dark:border-red-900/50 text-red-800 dark:text-red-300 text-xs font-semibold">
+                {resetElectionError}
+              </div>
+            )}
+
+            <form onSubmit={handleResetElection} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-700 dark:text-slate-300 mb-2">New Election Day &amp; Time</label>
+                <input
+                  type="datetime-local"
+                  required
+                  value={resetElectionStart}
+                  onChange={(e) => setResetElectionStart(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] text-gray-900 dark:text-white font-mono outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-700 dark:text-slate-300 mb-2">Election Duration (hours)</label>
+                <input
+                  type="number"
+                  min={1}
+                  required
+                  value={resetElectionHours}
+                  onChange={(e) => setResetElectionHours(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] text-gray-900 dark:text-white font-mono outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-700 dark:text-slate-300 mb-2">Superadmin Password (to confirm)</label>
+                <input
+                  type="password"
+                  required
+                  placeholder="••••••••"
+                  value={resetElectionPassword}
+                  onChange={(e) => setResetElectionPassword(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+
+              <div className="flex items-center justify-end space-x-2 pt-2 border-t border-gray-100 dark:border-[#1E2E4E]">
+                <button
+                  type="button"
+                  onClick={() => setShowResetElectionModal(false)}
+                  className="px-4 py-2 border rounded-xl text-xs font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={resettingElection}
+                  className="px-5 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-bold rounded-xl text-xs shadow-md transition-all flex items-center space-x-1.5"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  <span>{resettingElection ? 'Resetting...' : 'Reset Election Timer'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* End Election Modal (Superadmin password re-verification) */}
+      {showEndElectionModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+          <div className="bg-white dark:bg-[#0F172A] border border-gray-200 dark:border-[#1E2E4E] rounded-3xl p-6 max-w-md w-full shadow-2xl animate-fadeIn space-y-4">
+            <div className="flex items-center justify-between border-b border-gray-100 dark:border-[#1E2E4E] pb-3">
+              <div>
+                <h3 className="font-bold text-gray-900 dark:text-white text-base flex items-center gap-2">
+                  <Square className="w-5 h-5 text-red-500" />
+                  <span>End Election Now</span>
+                </h3>
+                <p className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">
+                  Conclude the election immediately and close the ballot.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowEndElectionModal(false)}
+                className="p-1.5 text-gray-400 hover:text-gray-600 rounded-xl"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {endElectionError && (
+              <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-300 dark:border-red-900/50 text-red-800 dark:text-red-300 text-xs font-semibold">
+                {endElectionError}
+              </div>
+            )}
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-700 dark:text-slate-300 mb-2">Superadmin Password (to confirm)</label>
+                <input
+                  type="password"
+                  required
+                  autoFocus
+                  placeholder="••••••••"
+                  value={endElectionPassword}
+                  onChange={(e) => setEndElectionPassword(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') confirmEndElection(); }}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-red-500"
+                />
+              </div>
+
+              <div className="flex items-center justify-end space-x-2 pt-2 border-t border-gray-100 dark:border-[#1E2E4E]">
+                <button
+                  type="button"
+                  onClick={() => setShowEndElectionModal(false)}
+                  className="px-4 py-2 border rounded-xl text-xs font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={endingElection}
+                  onClick={confirmEndElection}
+                  className="px-5 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-bold rounded-xl text-xs shadow-md transition-all flex items-center space-x-1.5"
+                >
+                  <Square className="w-4 h-4" />
+                  <span>{endingElection ? 'Ending...' : 'End Election Now'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* No Election Modal (Superadmin password re-verification) */}
+      {showNoElectionModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+          <div className="bg-white dark:bg-[#0F172A] border border-gray-200 dark:border-[#1E2E4E] rounded-3xl p-6 max-w-md w-full shadow-2xl animate-fadeIn space-y-4">
+            <div className="flex items-center justify-between border-b border-gray-100 dark:border-[#1E2E4E] pb-3">
+              <div>
+                <h3 className="font-bold text-gray-900 dark:text-white text-base flex items-center gap-2">
+                  <Ban className="w-5 h-5 text-slate-500" />
+                  <span>No Election</span>
+                </h3>
+                <p className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">
+                  Disable the election entirely: no countdown, no ended banner, no tally.
+                  Every previously cast vote is wiped from the ledger.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowNoElectionModal(false)}
+                className="p-1.5 text-gray-400 hover:text-gray-600 rounded-xl"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {noElectionError && (
+              <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-300 dark:border-red-900/50 text-red-800 dark:text-red-300 text-xs font-semibold">
+                {noElectionError}
+              </div>
+            )}
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-700 dark:text-slate-300 mb-2">Superadmin Password (to confirm)</label>
+                <input
+                  type="password"
+                  required
+                  autoFocus
+                  placeholder="••••••••"
+                  value={noElectionPassword}
+                  onChange={(e) => setNoElectionPassword(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') confirmNoElection(); }}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-slate-500"
+                />
+              </div>
+
+              <div className="flex items-center justify-end space-x-2 pt-2 border-t border-gray-100 dark:border-[#1E2E4E]">
+                <button
+                  type="button"
+                  onClick={() => setShowNoElectionModal(false)}
+                  className="px-4 py-2 border rounded-xl text-xs font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={voidingElection}
+                  onClick={confirmNoElection}
+                  className="px-5 py-2 bg-slate-600 hover:bg-slate-700 disabled:opacity-50 text-white font-bold rounded-xl text-xs shadow-md transition-all flex items-center space-x-1.5"
+                >
+                  <Ban className="w-4 h-4" />
+                  <span>{voidingElection ? 'Disabling...' : 'No Election'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ========================================================================= */}
       {/* TAB 2: COMMITTEE ADMIN (SUPERADMIN ONLY) */}
       {/* ========================================================================= */}
@@ -1485,14 +1885,14 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
               <div>
                 <h2 className="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
                   <Shield className="w-5 h-5 text-purple-600 dark:text-purple-400" />
-                  <span>Committee Administrators Registry</span>
+                  <span>Committee & YCEC Officers Registry</span>
                 </h2>
                 <p className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">
-                  Choose and appoint Committee Administrators from registered voters, allocate their mandates, or remove officers.
+                  Appoint Committee Administrators or YCEC Commissioners from registered voters, or remove officers.
                 </p>
               </div>
 
-              <div className="flex items-center space-x-3">
+              <div className="flex flex-wrap items-center gap-2">
                 {committeeFeedback && (
                   <div className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 text-xs font-semibold rounded-xl border border-emerald-300">
                     <Check className="w-3.5 h-3.5" />
@@ -1502,7 +1902,16 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
 
                 <button
                   type="button"
-                  onClick={() => setShowAddCommitteeModal(true)}
+                  onClick={() => { setAppointmentRole('ycec'); setShowAddCommitteeModal(true); }}
+                  className="px-4 py-2.5 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded-xl shadow-xs transition-all flex items-center space-x-2 text-xs"
+                >
+                  <Award className="w-4 h-4" />
+                  <span>+ Appoint YCEC Commissioner</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => { setAppointmentRole('committee'); setShowAddCommitteeModal(true); }}
                   className="px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl shadow-xs transition-all flex items-center space-x-2 text-xs"
                 >
                   <UserPlus className="w-4 h-4" />
@@ -1525,7 +1934,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
               </div>
 
               <span className="text-xs text-gray-500">
-                Active Committee Admins: <strong>{committeeAdmins.length}</strong>
+                Active Committee & YCEC Officers: <strong>{committeeAdmins.length}</strong>
               </span>
             </div>
 
@@ -1546,7 +1955,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                   {committeeAdmins.length === 0 ? (
                     <tr>
                       <td colSpan={6} className="py-12 text-center text-gray-400 text-xs">
-                        No Committee Administrators appointed yet. Click "+ Appoint Committee Admin" to select officers from registered voters.
+                        No officers appointed yet. Click "+ Appoint Committee Admin" or "+ Appoint YCEC Commissioner" to select officers from registered voters.
                       </td>
                     </tr>
                   ) : (
@@ -1590,10 +1999,17 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                               {admin.department || 'General Secretariat'}
                             </td>
                             <td className="py-3.5 px-4">
-                              <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 dark:bg-purple-950 text-purple-800 dark:text-purple-300">
-                                <Shield className="w-3 h-3" />
-                                <span>Committee Admin</span>
-                              </span>
+                              {admin.role === 'ycec' ? (
+    <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-teal-100 dark:bg-teal-950 text-teal-800 dark:text-teal-300">
+      <Award className="w-3 h-3" />
+      <span>YCEC Commissioner</span>
+    </span>
+  ) : (
+    <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 dark:bg-purple-950 text-purple-800 dark:text-purple-300">
+      <Shield className="w-3 h-3" />
+      <span>Committee Admin</span>
+    </span>
+  )}
                             </td>
                             <td className="py-3.5 px-4">
                               <span className="text-[11px] font-semibold text-gray-700 dark:text-slate-300">
@@ -1626,20 +2042,40 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                 <div className="flex items-center justify-between border-b border-gray-100 dark:border-[#1E2E4E] pb-3">
                   <div>
                     <h3 className="font-bold text-gray-900 dark:text-white text-base flex items-center gap-2">
-                      <UserPlus className="w-5 h-5 text-purple-600" />
-                      <span>Appoint Committee Administrators</span>
+                      {appointmentRole === 'ycec' ? <Award className="w-5 h-5 text-teal-600" /> : <UserPlus className="w-5 h-5 text-purple-600" />}
+                      <span>{appointmentRole === 'ycec' ? 'Appoint YCEC Commissioner(s)' : 'Appoint Committee Administrator(s)'}</span>
                     </h3>
                     <p className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">
-                      Select registered voters from the register to appoint as Electoral Committee Officers
+                      {appointmentRole === 'ycec'
+                        ? 'Select registered voters to appoint as Youth & Community Executive Commission Commissioners (directory roster).'
+                        : 'Select registered voters from the register to appoint as Electoral Committee Officers.'}
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => { setShowAddCommitteeModal(false); setSelectedVoterIdsForCommittee([]); }}
-                    className="p-1.5 text-gray-400 hover:text-gray-600 rounded-xl"
-                  >
-                    <X className="w-5 h-5" />
-                  </button>
+                  <div className="flex items-center space-x-2">
+                    <div className="flex rounded-xl overflow-hidden border border-gray-200 dark:border-[#1E2E4E] text-xs font-bold">
+                      <button
+                        type="button"
+                        onClick={() => setAppointmentRole('committee')}
+                        className={`px-3 py-1.5 transition-colors ${appointmentRole === 'committee' ? 'bg-purple-600 text-white' : 'bg-white dark:bg-[#16223B] text-gray-700 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-slate-800'}`}
+                      >
+                        Committee Admin
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAppointmentRole('ycec')}
+                        className={`px-3 py-1.5 transition-colors ${appointmentRole === 'ycec' ? 'bg-teal-600 text-white' : 'bg-white dark:bg-[#16223B] text-gray-700 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-slate-800'}`}
+                      >
+                        YCEC Commissioner
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => { setShowAddCommitteeModal(false); setSelectedVoterIdsForCommittee([]); }}
+                      className="p-1.5 text-gray-400 hover:text-gray-600 rounded-xl"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
                 </div>
 
                 {/* Search & Selection helpers */}
@@ -1739,7 +2175,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                     className="px-5 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white font-bold rounded-xl text-xs shadow-md transition-all flex items-center space-x-1.5"
                   >
                     <UserCheck className="w-4 h-4" />
-                    <span>Appoint Selected ({selectedVoterIdsForCommittee.length})</span>
+                    <span>Appoint Selected ({selectedVoterIdsForCommittee.length}) as {appointmentRole === 'ycec' ? 'YCEC Commissioner' : 'Committee Admin'}</span>
                   </button>
                 </div>
               </div>

@@ -43,7 +43,8 @@ export const VotingPage: React.FC<{ onNavigate: (page: string) => void }> = ({ o
     liveResults, 
     isElectionActive, 
     hasElectionStarted,
-    hasElectionEnded
+    hasElectionEnded,
+    noElection
   } = useElection();
   const { user } = useAuth();
 
@@ -74,7 +75,9 @@ export const VotingPage: React.FC<{ onNavigate: (page: string) => void }> = ({ o
     }
 
     if (!isElectionActive) {
-      alert(hasElectionEnded ? 'Election has concluded. No further votes accepted.' : 'Election has not commenced yet.');
+      alert(noElection
+        ? 'No election is currently scheduled. Please check back later.'
+        : hasElectionEnded ? 'Election has concluded. No further votes accepted.' : 'Election has not commenced yet.');
       return;
     }
 
@@ -162,6 +165,22 @@ export const VotingPage: React.FC<{ onNavigate: (page: string) => void }> = ({ o
 
       {/* Main Container */}
       {activeTab === 'ballot' ? (
+        noElection ? (
+          <div className="flex-1 h-full overflow-hidden flex items-center justify-center p-6">
+            <div className="text-center max-w-md">
+              <div className="w-20 h-20 mx-auto rounded-2xl bg-slate-100 dark:bg-[#16223B] border border-gray-200 dark:border-[#1E2E4E] flex items-center justify-center mb-4">
+                <Clock className="w-10 h-10 text-gray-400" />
+              </div>
+              <h3 className="text-lg font-extrabold text-gray-900 dark:text-white">No Election Scheduled</h3>
+              <p className="text-sm text-gray-500 dark:text-slate-400 mt-2 leading-relaxed">
+                The electoral authority has not scheduled any ballot at this time. Casting and tallying are currently unavailable.
+              </p>
+              <p className="text-xs text-gray-400 dark:text-slate-500 mt-4 font-medium">
+                Check the official election milestones for upcoming announcements.
+              </p>
+            </div>
+          </div>
+        ) : (
         /* Body split into 10% left side and 90% right side */
         <div className="flex flex-1 h-full overflow-hidden">
           {/* 10% Left Side Container: Independent scroll up/down alone without carrying any other part */}
@@ -437,6 +456,7 @@ export const VotingPage: React.FC<{ onNavigate: (page: string) => void }> = ({ o
             </div>
           </main>
         </div>
+        )
       ) : (
         /* Dedicated Voting Dashboard */
         <main className="flex-1 h-full overflow-y-auto p-4 md:p-8 space-y-6">
@@ -452,6 +472,13 @@ export const VotingPage: React.FC<{ onNavigate: (page: string) => void }> = ({ o
             </div>
             <CountdownTimer compact />
           </div>
+
+          {noElection && (
+            <div className="flex items-center space-x-2 px-4 py-3 rounded-2xl bg-slate-100 dark:bg-[#16223B] border border-gray-200 dark:border-[#1E2E4E] text-slate-500 dark:text-slate-400">
+              <Clock className="w-5 h-5 shrink-0" />
+              <span className="text-sm font-semibold">No election is running — tallies are cleared and locked until the electoral authority schedules a new ballot.</span>
+            </div>
+          )}
 
           {/* Cards for each position with progress bar */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

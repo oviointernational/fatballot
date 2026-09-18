@@ -28,7 +28,7 @@ export interface Voter {
   middleName?: string;
   lastName: string;
   name?: string;
-  role: 'voter' | 'contestant' | 'committee' | 'superadmin';
+  role: 'voter' | 'contestant' | 'committee' | 'ycec' | 'superadmin';
   isAccredited: boolean;
   isScreened?: boolean;
   assignedOfficeId?: string;
@@ -121,6 +121,8 @@ export interface SiteSettings {
   contestantsCanViewVoters: boolean;
   publicAuditLog: boolean;
   registrationOpen?: boolean;
+  /** 'none' = no election configured at all (no timer, no results). Omitted = time-driven. */
+  electionMode?: 'none';
   permissions?: RolePermissions;
 }
 
