@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Clock, AlertCircle, CheckCircle } from 'lucide-react';
+import { Clock, AlertCircle } from 'lucide-react';
 import { useElection } from '../../context/ElectionContext';
 
 interface TimeLeft {
@@ -13,13 +13,13 @@ export const CountdownTimer: React.FC<{ compact?: boolean }> = ({ compact = fals
   const { settings, hasElectionStarted, hasElectionEnded, isElectionActive } = useElection();
   const [timeLeft, setTimeLeft] = useState<TimeLeft>({ days: 0, hours: 0, minutes: 0, seconds: 0 });
 
+  const startTime = settings?.election_start ? new Date(settings.election_start).getTime() : 0;
+  const endTime = settings?.election_end ? new Date(settings.election_end).getTime() : 0;
+
   useEffect(() => {
     const calculateTime = () => {
       const now = new Date().getTime();
-      const targetTime = !hasElectionStarted
-        ? new Date(settings.electionStartTime).getTime()
-        : new Date(settings.electionEndTime).getTime();
-
+      const targetTime = !hasElectionStarted ? startTime : endTime;
       const diff = targetTime - now;
 
       if (diff <= 0) {
@@ -27,20 +27,19 @@ export const CountdownTimer: React.FC<{ compact?: boolean }> = ({ compact = fals
         return;
       }
 
-      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-      const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-      const seconds = Math.floor((diff % (1000 * 60)) / 1000);
-
-      setTimeLeft({ days, hours, minutes, seconds });
+      setTimeLeft({
+        days: Math.floor(diff / (1000 * 60 * 60 * 24)),
+        hours: Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60)),
+        minutes: Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60)),
+        seconds: Math.floor((diff % (1000 * 60)) / 1000)
+      });
     };
 
     calculateTime();
     const interval = setInterval(calculateTime, 1000);
     return () => clearInterval(interval);
-  }, [settings.electionStartTime, settings.electionEndTime, hasElectionStarted]);
+  }, [startTime, endTime, hasElectionStarted]);
 
-  // If election has ended
   if (hasElectionEnded) {
     return (
       <div className="flex items-center space-x-2 px-4 py-2 rounded-xl bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-900/50">
@@ -50,9 +49,7 @@ export const CountdownTimer: React.FC<{ compact?: boolean }> = ({ compact = fals
     );
   }
 
-  const label = !hasElectionStarted 
-    ? 'Countdown to Election Start:' 
-    : 'Election Ends In:';
+  const label = !hasElectionStarted ? 'Countdown to Election Start:' : 'Election Ends In:';
 
   if (compact) {
     return (
@@ -89,7 +86,6 @@ export const CountdownTimer: React.FC<{ compact?: boolean }> = ({ compact = fals
           </div>
         </div>
 
-        {/* Time Blocks */}
         <div className="flex items-center space-x-2 font-mono">
           <div className="flex flex-col items-center bg-black/40 border border-white/10 rounded-xl px-3 py-1.5 min-w-[58px]">
             <span className="text-xl font-black text-white">{String(timeLeft.days).padStart(2, '0')}</span>

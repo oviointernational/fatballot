@@ -1,305 +1,265 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { Voter } from '../types';
-
-// Authentication is fully self-contained: RA number + password verified by
-// our own server (scrypt hashes). No Firebase, no email codes, no external
-// auth service — the browser only ever talks to /api.
-export const supa = null;
+import { supabase } from '../lib/supabase';
+import { Profile } from '../types';
 
 interface AuthResult {
   success: boolean;
   message: string;
 }
 
+export interface RegisterInput {
+  ra_number: string;
+  email: string;
+  full_name: string;
+  password: string;
+}
+
 interface AuthContextType {
-  user: Voter | null;
-  sessionToken: string | null;
+  user: Profile | null;
   isLoading: boolean;
-  supersededError: string | null;
-  setupRequired: boolean;
-  refreshSetupStatus: () => Promise<void>;
-  /** Sign in with RA number + password (7-day single-device session). */
-  login: (raNumber: string, password: string) => Promise<AuthResult>;
-  /** Change own password while signed in. */
-  changePassword: (currentPassword: string, newPassword: string) => Promise<AuthResult>;
-  /** First-to-register: claims the Superadmin seat and signs in. */
-  setupSuperadmin: (profile: { email: string; firstName: string; lastName: string; password: string }) => Promise<AuthResult>;
+  isRecovery: boolean;
+  /** Sign in with the email + password that were used to register. */
+  login: (email: string, password: string) => Promise<AuthResult>;
+  /** Registers a voter IF their RA number + email match the committee's registration bank. */
+  register: (input: RegisterInput) => Promise<AuthResult>;
+  /** Supabase password-reset email (works for any registered account). */
+  forgotPassword: (email: string) => Promise<AuthResult>;
+  /** Set a new password (used after a recovery link, or anytime while signed in). */
+  updatePassword: (newPassword: string) => Promise<AuthResult>;
+  /** Update own contact details (RA, email, role stay locked by the database). */
+  updateProfile: (partial: Partial<Pick<Profile, 'full_name' | 'phone' | 'department' | 'level'>>) => Promise<AuthResult>;
   logout: () => Promise<void>;
-  clearSupersededError: () => void;
-  quickLogin: (raNumber: string) => Promise<boolean>;
+  refreshProfile: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-interface ApiRead {
-  ok: boolean;
-  status: number;
-  data: any | null;
-  raw: string;
-}
+const PENDING_KEY = 'fatballot_pending_registration';
 
-/**
- * Reads an API response defensively. Hosting platforms sometimes answer with
- * a non-JSON error document (proxy/gateway/function pages); the raw text is
- * preserved so the UI can show exactly what the platform said instead of a
- * bare "Unexpected token ..." syntax error.
- */
-async function readApiResponse(res: Response): Promise<ApiRead> {
-  let raw = '';
-  try {
-    raw = await res.text();
-  } catch {
-    raw = '';
-  }
-  if (!raw) return { ok: res.ok, status: res.status, data: null, raw: '' };
-  try {
-    return { ok: res.ok, status: res.status, data: JSON.parse(raw), raw };
-  } catch {
-    return { ok: false, status: res.status, data: null, raw };
-  }
-}
-
-function platformErrorMessage(read: ApiRead): string {
-  const snippet = read.raw.replace(/\s+/g, ' ').trim().slice(0, 180);
-  return `The server returned an unexpected response (HTTP ${read.status}${
-    snippet ? `: "${snippet}"` : ''
-  }). The API may be down or still deploying — please wait a minute and try again. If it persists, open /api/health and send us what it shows.`;
+function pendingToInput(raw: string | null): { ra_number: string; email: string; full_name: string } | null {
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
 }
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<Voter | null>(null);
-  const [sessionToken, setSessionToken] = useState<string | null>(() => localStorage.getItem('fatballot_token'));
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [supersededError, setSupersededError] = useState<string | null>(null);
-  const [setupRequired, setSetupRequired] = useState<boolean>(false);
+  const [user, setUser] = useState<Profile | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRecovery, setIsRecovery] = useState(false);
 
-  const fetchCurrentUser = useCallback(async (token: string) => {
-    try {
-      const res = await fetch('/api/auth/me', {
-        headers: { 'x-session-token': token }
-      });
-      const read = await readApiResponse(res);
-
-      if (res.status === 401) {
-        if (read.data?.error === 'SESSION_SUPERSEDED') {
-          setSupersededError('You have been logged out because your account was accessed from another device, or your 7-day session expired.');
-        }
-        setUser(null);
-        setSessionToken(null);
-        localStorage.removeItem('fatballot_token');
-        return;
-      }
-
-      if (read.ok && read.data) {
-        setUser(read.data);
-      } else if (!read.ok && !read.data) {
-        console.error('Error fetching current user:', platformErrorMessage(read));
-        setIsLoading(false);
-        return;
-      } else {
-        setUser(null);
-        setSessionToken(null);
-        localStorage.removeItem('fatballot_token');
-      }
-    } catch (err) {
-      console.error('Error fetching current user:', err);
-    } finally {
-      setIsLoading(false);
+  const loadProfile = useCallback(async (userId: string) => {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .maybeSingle();
+    if (error) {
+      console.error('profile load error', error.message);
+      return null;
     }
+    return data as Profile | null;
   }, []);
 
-  const refreshSetupStatus = useCallback(async () => {
-    try {
-      const res = await fetch('/api/auth/setup-status');
-      if (res.ok) {
-        const read = await readApiResponse(res);
-        if (read.data) setSetupRequired(Boolean(read.data.setupRequired));
-      }
-    } catch (err) {
-      console.error('Error fetching setup status:', err);
-    }
-  }, []);
-
-  useEffect(() => {
-    refreshSetupStatus();
-  }, [refreshSetupStatus]);
-
-  useEffect(() => {
-    if (sessionToken) {
-      fetchCurrentUser(sessionToken);
+  const refreshProfile = useCallback(async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.user) {
+      const profile = await loadProfile(session.user.id);
+      setUser(profile ?? null);
     } else {
-      setIsLoading(false);
+      setUser(null);
     }
-  }, [sessionToken, fetchCurrentUser]);
+  }, [loadProfile]);
 
-  const applySession = (data: any) => {
-    setUser(data.voter);
-    setSessionToken(data.sessionToken);
-    localStorage.setItem('fatballot_token', data.sessionToken);
-    setSupersededError(null);
+  /** Finishes a sign-up whose profile insert was deferred (email-confirm link clicked). */
+  const completeRegistration = useCallback(async (): Promise<{ error?: string; data?: Profile }> => {
+    const pending = pendingToInput(localStorage.getItem(PENDING_KEY));
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!pending || !user) return {};
+    const { data, error } = await supabase
+      .from('profiles')
+      .insert({
+        id: user.id,
+        ra_number: pending.ra_number,
+        email: pending.email.toLowerCase(),
+        full_name: pending.full_name
+      })
+      .select('*')
+      .single();
+    if (error) return { error: error.message };
+    localStorage.removeItem(PENDING_KEY);
+    setUser(data as Profile);
+    return { data: data as Profile };
+  }, []);
+
+  const syncFromSession = useCallback(async (session: any) => {
+    if (!session?.user) return;
+    let profile = await loadProfile(session.user.id);
+    if (!profile) {
+      const completed = await completeRegistration();
+      if (completed.data) return;
+      if (completed.error) {
+        // Likely a bank mismatch: the account exists but has no voter record.
+        // Keep them signed out so the register/login pages can explain it.
+        await supabase.auth.signOut();
+        setUser(null);
+        return;
+      }
+      // A signed-in auth user with no profile and no pending registration:
+      // treat as not a registered voter.
+      await supabase.auth.signOut();
+      setUser(null);
+      return;
+    }
+    setUser(profile);
+  }, [loadProfile, completeRegistration]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!cancelled) {
+        await syncFromSession(session);
+        setIsLoading(false);
+      }
+    })();
+
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_IN') {
+        syncFromSession(session);
+      } else if (event === 'SIGNED_OUT') {
+        setUser(null);
+        setIsRecovery(false);
+      } else if (event === 'PASSWORD_RECOVERY') {
+        setIsRecovery(true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      sub.subscription.unsubscribe();
+    };
+  }, [syncFromSession]);
+
+  const login = async (email: string, password: string): Promise<AuthResult> => {
+    if (!email.trim() || !password) {
+      return { success: false, message: 'Please enter your email and password.' };
+    }
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: email.trim().toLowerCase(),
+      password
+    });
+    if (error) {
+      if (error.message.toLowerCase().includes('invalid login')) {
+        return { success: false, message: 'Incorrect email or password.' };
+      }
+      if (error.message.toLowerCase().includes('email not confirmed')) {
+        return { success: false, message: 'Please confirm your email before signing in.' };
+      }
+      return { success: false, message: error.message };
+    }
+    // Rely on SIGNED_IN for the profile push, but verify here too,
+    // because React state updates are asynchronous.
+    await syncFromSession(data.session);
+    const { data: sessionData } = await supabase.auth.getSession();
+    if (sessionData.session) {
+      const profile = await loadProfile(sessionData.session.user.id);
+      if (profile) return { success: true, message: 'Signed in successfully.' };
+    }
+    return { success: false, message: 'Your account has no voter record yet. Please register with your RA number.' };
   };
 
-  const login = async (raNumber: string, password: string): Promise<AuthResult> => {
-    const cleanRA = raNumber.replace(/^RA-?/i, '').trim();
-    if (!cleanRA) {
-      return { success: false, message: 'Please enter your RA Number.' };
+  const register = async (input: RegisterInput): Promise<AuthResult> => {
+    const ra = input.ra_number.trim();
+    const email = input.email.trim().toLowerCase();
+    const fullName = input.full_name.trim();
+    if (!ra || !email || !fullName || !input.password) {
+      return { success: false, message: 'Please complete every field.' };
     }
-    if (!password) {
-      return { success: false, message: 'Please enter your password.' };
-    }
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ raNumber: cleanRA, password, deviceInfo: navigator.userAgent })
-      });
-      const read = await readApiResponse(res);
-      if (!read.data) {
-        return { success: false, message: platformErrorMessage(read) };
-      }
-      if (!read.ok) {
-        return { success: false, message: read.data.message || 'Sign-in failed.' };
-      }
-      applySession(read.data);
-      return { success: true, message: 'Signed in successfully.' };
-    } catch (err: any) {
-      return { success: false, message: err.message || 'Network error occurred.' };
-    }
-  };
-
-  const changePassword = async (currentPassword: string, newPassword: string): Promise<AuthResult> => {
-    if (!currentPassword || !newPassword) {
-      return { success: false, message: 'Please fill in both password fields.' };
-    }
-    if (newPassword.length < 6) {
-      return { success: false, message: 'New password must be at least 6 characters.' };
-    }
-    try {
-      const res = await fetch('/api/auth/change-password', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-session-token': sessionToken || ''
-        },
-        body: JSON.stringify({ currentPassword, newPassword })
-      });
-      const read = await readApiResponse(res);
-      if (!read.data) {
-        return { success: false, message: platformErrorMessage(read) };
-      }
-      if (!read.ok) {
-        return { success: false, message: read.data.message || 'Could not change password.' };
-      }
-      return { success: true, message: 'Password changed successfully.' };
-    } catch (err: any) {
-      return { success: false, message: err.message || 'Network error occurred.' };
-    }
-  };
-
-  // First-to-register: claims the Superadmin seat on a fresh system and signs
-  // straight in with the just-set password. Single-use by design.
-  const setupSuperadmin = async (profile: { email: string; firstName: string; lastName: string; password: string }): Promise<AuthResult> => {
-    const cleanEmail = profile.email.trim().toLowerCase();
-    if (!cleanEmail || !profile.firstName.trim() || !profile.lastName.trim() || !profile.password) {
-      return { success: false, message: 'Please complete all fields.' };
-    }
-    if (profile.password.length < 6) {
+    if (input.password.length < 6) {
       return { success: false, message: 'Password must be at least 6 characters.' };
     }
-    try {
-      const res = await fetch('/api/auth/setup-superadmin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: cleanEmail,
-          firstName: profile.firstName.trim(),
-          lastName: profile.lastName.trim(),
-          password: profile.password
-        })
-      });
-      const read = await readApiResponse(res);
-      if (!read.data) {
-        return { success: false, message: platformErrorMessage(read) };
+
+    const { data, error } = await supabase.auth.signUp({ email, password: input.password });
+    if (error) {
+      if (error.message.toLowerCase().includes('already registered') || error.message.toLowerCase().includes('already been registered')) {
+        return { success: false, message: 'That email is already registered. Please sign in instead.' };
       }
-      if (!read.ok) {
-        return { success: false, message: read.data.message || 'Setup failed.' };
-      }
-      applySession(read.data);
-      await refreshSetupStatus();
-      return { success: true, message: 'Superadmin seat claimed. You are signed in.' };
-    } catch (err: any) {
-      return { success: false, message: err.message || 'Setup failed.' };
+      return { success: false, message: error.message };
     }
+
+    // Stage the profile details so they can be replayed after email confirmation.
+    localStorage.setItem(PENDING_KEY, JSON.stringify({ ra_number: ra, email, full_name: fullName }));
+
+    if (data.session?.user) {
+      const completed = await completeRegistration();
+      if (completed.error) {
+        return {
+          success: false,
+          message: 'Registration was not accepted: ' + completed.error
+        };
+      }
+      return { success: true, message: `Welcome, ${fullName}. You are registered and signed in.` };
+    }
+
+    return {
+      success: true,
+      message: 'Almost there! Please click the confirmation link we just emailed you. Your profile completes automatically after that.'
+    };
   };
 
-  // Server-side bypass used by dev/test shortcuts in AdminPage.
-  // Creates an exclusive backend session directly for an RA number.
-  // DISABLED in production builds — the server also rejects it there.
-  const quickLogin = async (raNumber: string) => {
-    if (import.meta.env.PROD) {
-      alert('Quick login is disabled in production. Please sign in with your RA Number and password.');
-      return false;
+  const forgotPassword = async (email: string): Promise<AuthResult> => {
+    if (!email.trim()) {
+      return { success: false, message: 'Please enter the email you registered with.' };
     }
-    try {
-      const cleanRA = raNumber.replace(/^RA-?/i, '').trim();
-      const res = await fetch('/api/auth/dev-login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ raNumber: cleanRA, deviceInfo: navigator.userAgent })
-      });
-
-      const read = await readApiResponse(res);
-      if (!read.data) {
-        throw new Error(platformErrorMessage(read));
-      }
-      if (!read.ok) {
-        throw new Error(read.data.message || 'Quick login failed.');
-      }
-
-      setUser(read.data.voter);
-      setSessionToken(read.data.sessionToken);
-      localStorage.setItem('fatballot_token', read.data.sessionToken);
-      setSupersededError(null);
-      return true;
-    } catch (err: any) {
-      alert(err.message || 'Quick login failed.');
-      return false;
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
+      redirectTo: `${window.location.origin}/update-password`
+    });
+    if (error) {
+      return { success: false, message: error.message };
     }
+    return { success: true, message: 'If an account exists with that email, a password-reset link is on its way.' };
+  };
+
+  const updatePassword = async (newPassword: string): Promise<AuthResult> => {
+    if (!newPassword || newPassword.length < 6) {
+      return { success: false, message: 'New password must be at least 6 characters.' };
+    }
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) return { success: false, message: error.message };
+    setIsRecovery(false);
+    return { success: true, message: 'Password updated successfully.' };
+  };
+
+  const updateProfile = async (partial: Partial<Pick<Profile, 'full_name' | 'phone' | 'department' | 'level'>>): Promise<AuthResult> => {
+    if (!user) return { success: false, message: 'You need to be signed in.' };
+    const { error } = await supabase
+      .from('profiles')
+      .update({ ...partial, updated_at: new Date().toISOString() })
+      .eq('id', user.id);
+    if (error) return { success: false, message: error.message };
+    await refreshProfile();
+    return { success: true, message: 'Profile updated successfully.' };
   };
 
   const logout = async () => {
-    if (sessionToken) {
-      try {
-        await fetch('/api/auth/logout', {
-          method: 'POST',
-          headers: { 'x-session-token': sessionToken }
-        });
-      } catch (err) {
-        console.error('Logout error', err);
-      }
-    }
+    await supabase.auth.signOut();
     setUser(null);
-    setSessionToken(null);
-    localStorage.removeItem('fatballot_token');
+    setIsRecovery(false);
   };
-
-  const clearSupersededError: () => void = () => setSupersededError(null);
 
   return (
     <AuthContext.Provider
       value={{
         user,
-        sessionToken,
         isLoading,
-        supersededError,
-        setupRequired,
-        refreshSetupStatus,
+        isRecovery,
         login,
-        changePassword,
-        setupSuperadmin,
+        register,
+        forgotPassword,
+        updatePassword,
+        updateProfile,
         logout,
-        clearSupersededError,
-        quickLogin
+        refreshProfile
       }}
     >
       {children}

@@ -1,192 +1,181 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { Office, CandidateProfile, SiteSettings, CastVote, OfficeLiveResult, SystemStats } from '../types';
+import { supabase } from '../lib/supabase';
+import {
+  SiteSettings,
+  Office,
+  Candidate,
+  VoteRow,
+  VoteChoice,
+  VoteCountRow,
+  OfficeTotalRow,
+  VoterStats,
+  OfficeLiveResult
+} from '../types';
 import { useAuth } from './AuthContext';
 
+interface CastVoteResult {
+  success: boolean;
+  message?: string;
+}
+
 interface ElectionContextType {
-  settings: SiteSettings;
+  settings: SiteSettings | null;
   offices: Office[];
-  candidates: CandidateProfile[];
+  candidates: Candidate[];
   liveResults: OfficeLiveResult[];
-  myVotes: CastVote[];
-  stats: SystemStats | null;
+  myVotes: VoteRow[];
+  stats: VoterStats | null;
   isLoading: boolean;
-  castVote: (officeId: string, choice: 'candidate' | 'for' | 'against', candidateId?: string) => Promise<{ success: boolean; isChange?: boolean; message?: string }>;
-  updateSettings: (newSettings: Partial<SiteSettings>) => Promise<boolean>;
-  refreshAll: () => Promise<void>;
   isElectionActive: boolean;
   hasElectionStarted: boolean;
   hasElectionEnded: boolean;
+  castVote: (officeId: string, choice: VoteChoice, candidateId: string) => Promise<CastVoteResult>;
+  updateSettings: (partial: Partial<SiteSettings>) => Promise<boolean>;
+  refreshAll: () => Promise<void>;
 }
-
-const defaultSettings: SiteSettings = {
-  siteName: "FatBallot",
-  aboutTitle: "Official 2026 Youth & Community Executive Elections",
-  aboutContent: "Welcome to FatBallot.",
-  aboutImageUrl: "",
-  electionStartTime: new Date().toISOString(),
-  electionEndTime: new Date(Date.now() + 86400000).toISOString(),
-  contestantsCanViewVoters: true,
-  publicAuditLog: false
-};
 
 const ElectionContext = createContext<ElectionContextType | undefined>(undefined);
 
 export const ElectionProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { sessionToken, user } = useAuth();
-  const [settings, setSettings] = useState<SiteSettings>(defaultSettings);
+  const { user } = useAuth();
+
+  const [settings, setSettings] = useState<SiteSettings | null>(null);
   const [offices, setOffices] = useState<Office[]>([]);
-  const [candidates, setCandidates] = useState<CandidateProfile[]>([]);
-  const [liveResults, setLiveResults] = useState<OfficeLiveResult[]>([]);
-  const [myVotes, setMyVotes] = useState<CastVote[]>([]);
-  const [stats, setStats] = useState<SystemStats | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [voteCounts, setVoteCounts] = useState<VoteCountRow[]>([]);
+  const [officeTotals, setOfficeTotals] = useState<OfficeTotalRow[]>([]);
+  const [myVotes, setMyVotes] = useState<VoteRow[]>([]);
+  const [stats, setStats] = useState<VoterStats | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const fetchPublicData = useCallback(async () => {
-    try {
-      const [setRes, offRes, candRes, statRes, liveRes] = await Promise.all([
-        fetch('/api/settings'),
-        fetch('/api/offices'),
-        fetch('/api/candidates'),
-        fetch('/api/stats'),
-        fetch('/api/votes/live-results')
-      ]);
-
-      if (setRes.ok) setSettings(await setRes.json());
-      if (offRes.ok) setOffices(await offRes.json());
-      if (candRes.ok) setCandidates(await candRes.json());
-      if (statRes.ok) setStats(await statRes.json());
-      if (liveRes.ok) setLiveResults(await liveRes.json());
-    } catch (err) {
-      console.error('Error fetching public election data:', err);
-    } finally {
-      setIsLoading(false);
-    }
+  const loadPublicData = useCallback(async () => {
+    const [settingsQ, officesQ, candidatesQ, countsQ, totalsQ, statsQ] = await Promise.all([
+      supabase.from('settings').select('*').maybeSingle(),
+      supabase.from('offices').select('*').order('sort_order'),
+      supabase.from('candidates').select('*'),
+      supabase.from('vote_counts').select('*'),
+      supabase.from('office_totals').select('*'),
+      supabase.from('voter_stats').select('*').single()
+    ]);
+    if (!settingsQ.error && settingsQ.data) setSettings(settingsQ.data as SiteSettings);
+    if (!officesQ.error) setOffices((officesQ.data as Office[]) || []);
+    if (!candidatesQ.error) setCandidates((candidatesQ.data as Candidate[]) || []);
+    if (!countsQ.error) setVoteCounts((countsQ.data as VoteCountRow[]) || []);
+    if (!totalsQ.error) setOfficeTotals((totalsQ.data as OfficeTotalRow[]) || []);
+    if (!statsQ.error && statsQ.data) setStats(statsQ.data as VoterStats);
   }, []);
 
-  const fetchMyVotes = useCallback(async () => {
-    if (!sessionToken) {
+  const loadMyVotes = useCallback(async () => {
+    if (!user) {
       setMyVotes([]);
       return;
     }
-    try {
-      const res = await fetch('/api/votes/my-votes', {
-        headers: { 'x-session-token': sessionToken }
-      });
-      if (res.ok) {
-        setMyVotes(await res.json());
-      }
-    } catch (err) {
-      console.error('Error fetching user votes:', err);
-    }
-  }, [sessionToken]);
+    const { data, error } = await supabase
+      .from('votes')
+      .select('*')
+      .eq('voter_id', user.id);
+    if (!error) setMyVotes((data as VoteRow[]) || []);
+  }, [user]);
+
+  const refreshAll = useCallback(async () => {
+    await Promise.all([loadPublicData(), loadMyVotes()]);
+  }, [loadPublicData, loadMyVotes]);
 
   useEffect(() => {
-    fetchPublicData();
-  }, [fetchPublicData]);
+    loadPublicData().finally(() => setIsLoading(false));
+  }, [loadPublicData]);
 
   useEffect(() => {
-    fetchMyVotes();
-  }, [fetchMyVotes, user]);
+    loadMyVotes();
+  }, [loadMyVotes]);
 
-  // Live results polling (works on stateless deployments; replaces WebSockets)
+  // Live results polling (Supabase is stateless on the client; poll the views).
   useEffect(() => {
     let cancelled = false;
     let timer: any = null;
 
     const refresh = async () => {
+      const [countsQ, totalsQ, statsQ] = await Promise.all([
+        supabase.from('vote_counts').select('*'),
+        supabase.from('office_totals').select('*'),
+        supabase.from('voter_stats').select('*').single()
+      ]);
       if (cancelled) return;
-      try {
-        const [res, statsRes] = await Promise.all([
-          fetch('/api/votes/live-results'),
-          fetch('/api/stats')
-        ]);
-        if (!cancelled && res.ok) setLiveResults(await res.json());
-        if (!cancelled && statsRes.ok) setStats(await statsRes.json());
-      } catch (e) {
-        console.error('Live results refresh error', e);
-      }
-      if (!cancelled) timer = setTimeout(refresh, 4000);
+      if (!countsQ.error) setVoteCounts((countsQ.data as VoteCountRow[]) || []);
+      if (!totalsQ.error) setOfficeTotals((totalsQ.data as OfficeTotalRow[]) || []);
+      if (!statsQ.error && statsQ.data) setStats(statsQ.data as VoterStats);
+      timer = setTimeout(refresh, 4000);
     };
 
     refresh();
-
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
   }, []);
 
-  // Compute election status
   const now = new Date().getTime();
-  const startTime = new Date(settings.electionStartTime).getTime();
-  const endTime = new Date(settings.electionEndTime).getTime();
+  const startTime = settings?.election_start ? new Date(settings.election_start).getTime() : 0;
+  const endTime = settings?.election_end ? new Date(settings.election_end).getTime() : 0;
   const hasElectionStarted = now >= startTime;
   const hasElectionEnded = now > endTime;
   const isElectionActive = hasElectionStarted && !hasElectionEnded;
 
-  // Cast vote with instant auto-save and state update
-  const castVote = async (
-    officeId: string,
-    choice: 'candidate' | 'for' | 'against',
-    candidateId?: string
-  ) => {
-    if (!sessionToken) {
-      return { success: false, message: 'Please log in with your RA Number to cast your vote.' };
-    }
+  const liveResults: OfficeLiveResult[] = offices.map((office) => {
+    const rows = voteCounts.filter((v) => v.office_id === office.id);
+    const total = officeTotals.find((t) => t.office_id === office.id)?.total ?? 0;
+    return {
+      officeId: office.id,
+      officeTitle: office.title,
+      totalVotes: total,
+      isSingleCandidate: rows.length === 1,
+      candidates: rows.map((r) => ({
+        candidateId: r.candidate_id,
+        candidateName: r.candidate_name,
+        avatar: r.avatar,
+        tagline: r.tagline,
+        count: r.votes_for + r.votes_against,
+        forCount: r.votes_for,
+        againstCount: r.votes_against,
+        percentage: total > 0 ? Math.round(((r.votes_for + r.votes_against) / total) * 100) : 0
+      }))
+    };
+  });
 
-    try {
-      const res = await fetch('/api/votes/cast', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-session-token': sessionToken
+  const castVote = async (officeId: string, choice: VoteChoice, candidateId: string): Promise<CastVoteResult> => {
+    if (!user) return { success: false, message: 'Please sign in to vote.' };
+    if (!settings?.voting_open) return { success: false, message: 'Voting is currently closed.' };
+
+    const { error } = await supabase
+      .from('votes')
+      .upsert(
+        {
+          voter_id: user.id,
+          office_id: officeId,
+          candidate_id: candidateId,
+          choice
         },
-        body: JSON.stringify({ officeId, choice, candidateId })
-      });
+        { onConflict: 'voter_id,office_id' }
+      );
 
-      const data = await res.json();
-      if (!res.ok) {
-        return { success: false, message: data.message || 'Failed to submit vote.' };
-      }
-
-      // Update local myVotes state immediately
-      setMyVotes(prev => {
-        const filtered = prev.filter(v => v.officeId !== officeId);
-        return [...filtered, data.vote];
-      });
-
-      return { success: true, isChange: data.isChange };
-    } catch (err: any) {
-      return { success: false, message: err.message || 'Network error occurred.' };
+    if (error) {
+      return { success: false, message: error.message || 'Failed to submit your ballot.' };
     }
+    await Promise.all([loadMyVotes(), loadPublicData()]);
+    return { success: true };
   };
 
-  const updateSettings = async (newSettings: Partial<SiteSettings>) => {
-    if (!sessionToken) return false;
-    try {
-      const res = await fetch('/api/settings', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-session-token': sessionToken
-        },
-        body: JSON.stringify(newSettings)
-      });
-
-      if (res.ok) {
-        const updated = await res.json();
-        setSettings(updated);
-        return true;
-      }
-      return false;
-    } catch (err) {
-      console.error('Failed to update settings:', err);
+  const updateSettings = async (partial: Partial<SiteSettings>): Promise<boolean> => {
+    const { error } = await supabase
+      .from('settings')
+      .update({ ...partial, updated_at: new Date().toISOString() })
+      .eq('id', 1);
+    if (error) {
+      console.error('settings update error', error.message);
       return false;
     }
-  };
-
-  const refreshAll = async () => {
-    await Promise.all([fetchPublicData(), fetchMyVotes()]);
+    await loadPublicData();
+    return true;
   };
 
   return (
@@ -199,12 +188,12 @@ export const ElectionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         myVotes,
         stats,
         isLoading,
-        castVote,
-        updateSettings,
-        refreshAll,
         isElectionActive,
         hasElectionStarted,
-        hasElectionEnded
+        hasElectionEnded,
+        castVote,
+        updateSettings,
+        refreshAll
       }}
     >
       {children}
