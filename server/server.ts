@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import app, { setBroadcastLiveResults } from './app';

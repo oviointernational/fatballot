@@ -11,6 +11,7 @@
  *   $env:SUPABASE_SERVICE_ROLE_KEY="<service_role key>"
  *   npm run verify:db
  */
+import 'dotenv/config';
 import { db } from '../server/database';
 import { auditLedger } from '../server/auditLedger';
 
