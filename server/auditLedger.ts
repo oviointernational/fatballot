@@ -1,8 +1,6 @@
 import crypto from 'crypto';
-import fs from 'fs';
-import path from 'path';
-import { SupabaseClient } from '@supabase/supabase-js';
-import { hasSupabase, getSupabase } from './supabase';
+import { getSupabase } from './supabase';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 export interface AuditActor {
   id?: string;
@@ -29,9 +27,6 @@ export interface VerificationResult {
   error?: string;
 }
 
-const DATA_DIR = path.join(process.cwd(), 'server', 'data');
-const LEDGER_FILE = path.join(DATA_DIR, 'audit_ledger.json');
-
 // Supabase jsonb sorts object keys alphabetically, which changes the output
 // of JSON.stringify and therefore breaks hash verification. A deterministic
 // (key-sorted) serializer ensures the hash input is identical regardless of
@@ -44,96 +39,61 @@ function stableStringify(obj: any): string {
   return `{${sorted.join(',')}}`;
 }
 
+type Row = Record<string, any>;
+
+function mapBlock(r: Row): AuditBlock {
+  return {
+    index: r.idx,
+    timestamp: r.timestamp,
+    eventType: r.event_type,
+    actor: r.actor ?? {},
+    details: r.details ?? {},
+    previousHash: r.previous_hash,
+    hash: r.hash
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Hash-chained audit ledger persisted in public.audit_log (append-only).
+// recordEvent keeps its synchronous fire-and-forget signature so no route
+// changes are needed: appends are serialized through an in-memory queue,
+// guaranteeing per-instance ordering of the hash chain.
+// ---------------------------------------------------------------------------
+
 export class AuditLedger {
-  private chain: AuditBlock[] = [];
-  private supabase: SupabaseClient | null = null;
-  private supabaseReady = false;
-  private pendingWrite = false;
-  private autoRefreshTimer: NodeJS.Timeout | null = null;
+  private supabase: SupabaseClient;
+  private queue: Promise<void> = Promise.resolve();
 
   constructor() {
-    const usingSupabase = hasSupabase();
-    if (usingSupabase) {
-      this.supabase = getSupabase();
-    } else {
-      this.ensureDataDir();
-      this.loadChain();
-      if (this.chain.length === 0) {
-        this.createGenesisBlock();
-      }
-    }
+    this.supabase = getSupabase();
   }
 
-  // Loads the ledger from Supabase (source of truth on serverless). Genesis is
-  // re-created only when no chain exists anywhere. A one-time rehash repair
-  // fixes chains whose hashes were corrupted by jsonb's key sorting.
-  public async init() {
-    if (!this.supabase || this.supabaseReady) return;
-    await this.pullFromSupabase();
-    this.supabaseReady = true;
-    if (this.chain.length === 0) {
-      this.createGenesisBlock();
-    }
-    this.startAutoRefresh();
-  }
-
-  private startAutoRefresh() {
-    if (this.autoRefreshTimer) clearInterval(this.autoRefreshTimer);
-    this.autoRefreshTimer = setInterval(() => {
-      if (this.supabase && this.supabaseReady && !this.pendingWrite) {
-        this.pullFromSupabase().catch(err =>
-          console.error('Supabase ledger refresh failed:', err)
-        );
-      }
-    }, 15000);
-    this.autoRefreshTimer.unref?.();
-  }
-
-  private async pullFromSupabase() {
-    if (!this.supabase) return;
+  // Ensures the genesis block exists (fresh databases). Called once at boot.
+  public async init(): Promise<void> {
     const { data, error } = await this.supabase
-      .from('app_store')
-      .select('data')
-      .eq('key', 'ledger')
-      .maybeSingle();
+      .from('audit_log')
+      .select('idx')
+      .limit(1);
+    if (error) throw new Error(`Audit ledger unavailable: ${error.message}. Run supabase/schema.sql on a fresh database.`);
+    if ((data ?? []).length > 0) return;
 
-    if (error) {
-      console.error('Supabase ledger read failed:', error.message);
-      return;
-    }
+    const timestamp = new Date('2026-09-01T00:00:00.000Z').toISOString();
+    const eventType = 'GENESIS_BLOCK';
+    const actor: AuditActor = { role: 'SYSTEM', name: 'FatBallot Security Core' };
+    const details = { message: 'FatBallot Immutable Audit Ledger initialized with zero-knowledge cryptographic chaining.' };
+    const previousHash = '0'.repeat(64);
+    const hash = this.calculateHash(0, timestamp, eventType, actor, details, previousHash);
 
-    if (data?.data && Array.isArray(data.data)) {
-      this.chain = data.data as AuditBlock[];
-      // Self-heal: jsonb sorts object keys, breaking hashes for chains written
-      // before the key-sorted serializer. Rehash (idempotent) and persist.
-      if (this.rehashChain()) {
-        await this.pushToSupabase(this.chain);
-      }
-    } else {
-      // No remote ledger yet — seed it with whatever exists locally.
-      await this.pushToSupabase(this.chain);
-    }
-  }
-
-  private async pushToSupabase(chain: AuditBlock[]): Promise<void> {
-    if (!this.supabase) return;
-    const { error } = await this.supabase
-      .from('app_store')
-      .upsert({ key: 'ledger', data: chain, updated_at: new Date().toISOString() });
-    if (error) {
-      console.error('Supabase ledger save failed:', error.message);
-    }
-  }
-
-  private ensureDataDir() {
-    try {
-      if (!fs.existsSync(DATA_DIR)) {
-        fs.mkdirSync(DATA_DIR, { recursive: true });
-      }
-    } catch (err) {
-      // Read-only filesystem (serverless) — Supabase handles persistence.
-      console.warn('Local data dir unavailable, using Supabase only:', (err as Error).message);
-    }
+    const { error: insErr } = await this.supabase.from('audit_log').insert({
+      idx: 0,
+      timestamp,
+      event_type: eventType,
+      actor,
+      details,
+      previous_hash: previousHash,
+      hash
+    });
+    if (insErr) throw new Error(`Audit ledger unavailable: ${insErr.message}.`);
   }
 
   private calculateHash(
@@ -148,175 +108,128 @@ export class AuditLedger {
     return crypto.createHash('sha256').update(dataString).digest('hex');
   }
 
-  private createGenesisBlock() {
-    const timestamp = new Date('2026-09-01T00:00:00.000Z').toISOString();
-    const eventType = 'GENESIS_BLOCK';
-    const actor: AuditActor = { role: 'SYSTEM', name: 'FatBallot Security Core' };
-    const details = { message: 'FatBallot Immutable Audit Ledger initialized with zero-knowledge cryptographic chaining.' };
-    const previousHash = '0'.repeat(64);
-    const hash = this.calculateHash(0, timestamp, eventType, actor, details, previousHash);
+  private async appendEvent(
+    eventType: string,
+    actor: AuditActor,
+    details: Record<string, any>
+  ): Promise<AuditBlock> {
+    // Retry on unique-index races (two instances appending simultaneously).
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { data: last } = await this.supabase
+        .from('audit_log')
+        .select('idx, hash')
+        .order('idx', { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-    const genesisBlock: AuditBlock = {
-      index: 0,
-      timestamp,
-      eventType,
-      actor,
-      details,
-      previousHash,
-      hash
-    };
+      const index = last ? last.idx + 1 : 0;
+      const timestamp = new Date().toISOString();
+      const previousHash = last ? last.hash : '0'.repeat(64);
+      const hash = this.calculateHash(index, timestamp, eventType, actor, details, previousHash);
 
-    this.chain = [genesisBlock];
-    this.saveChain();
-  }
-
-  // Recomputes all hashes in the chain using the key-sorted serializer so
-  // hashes survive jsonb round-trips. Also repairs previousHash links after
-  // any earlier block's hash changed. Returns true if any block was updated.
-  private rehashChain(): boolean {
-    let changed = false;
-    for (let i = 0; i < this.chain.length; i++) {
-      const block = this.chain[i];
-      // Fix previousHash to match the (possibly rehashed) preceding block.
-      if (i === 0) {
-        if (block.previousHash !== '0'.repeat(64)) {
-          block.previousHash = '0'.repeat(64);
-          changed = true;
-        }
-      } else {
-        const prevHash = this.chain[i - 1].hash;
-        if (block.previousHash !== prevHash) {
-          block.previousHash = prevHash;
-          changed = true;
-        }
+      const { error } = await this.supabase.from('audit_log').insert({
+        idx: index,
+        timestamp,
+        event_type: eventType,
+        actor,
+        details,
+        previous_hash: previousHash,
+        hash
+      });
+      if (!error) {
+        return { index, timestamp, eventType, actor, details, previousHash, hash };
       }
-      const recomputedHash = this.calculateHash(
-        block.index,
-        block.timestamp,
-        block.eventType,
-        block.actor,
-        block.details,
-        block.previousHash
-      );
-      if (block.hash !== recomputedHash) {
-        block.hash = recomputedHash;
-        changed = true;
+      if (error.code !== '23505') {
+        throw new Error(`Audit ledger write failed: ${error.message}`);
       }
+      // Index taken by a concurrent writer — re-read and retry.
     }
-    return changed;
-  }
-
-  private loadChain() {
-    if (this.supabase) return;
-    try {
-      if (fs.existsSync(LEDGER_FILE)) {
-        const raw = fs.readFileSync(LEDGER_FILE, 'utf-8');
-        this.chain = JSON.parse(raw);
-      }
-    } catch (err) {
-      console.error('Failed to load audit ledger from disk, re-initializing...', err);
-      this.chain = [];
-    }
-  }
-
-  private saveChain(chainToSave: AuditBlock[] = this.chain) {
-    if (!this.supabase) {
-      try {
-        fs.writeFileSync(LEDGER_FILE, JSON.stringify(chainToSave, null, 2), 'utf-8');
-      } catch (err) {
-        console.error('Failed to save audit ledger to disk', err);
-      }
-      return;
-    }
-
-    if (this.supabaseReady) {
-      this.pendingWrite = true;
-      this.pushToSupabase(chainToSave)
-        .then(() => {
-          this.pendingWrite = false;
-        })
-        .catch(() => {
-          this.pendingWrite = false;
-        });
-    }
+    throw new Error('Audit ledger write failed after retries.');
   }
 
   public recordEvent(
     eventType: string,
     actor: AuditActor,
     details: Record<string, any> = {}
-  ): AuditBlock {
-    const lastBlock = this.chain[this.chain.length - 1];
-    const index = lastBlock ? lastBlock.index + 1 : 0;
-    const timestamp = new Date().toISOString();
-    const previousHash = lastBlock ? lastBlock.hash : '0'.repeat(64);
-    const hash = this.calculateHash(index, timestamp, eventType, actor, details, previousHash);
-
-    const newBlock: AuditBlock = {
-      index,
-      timestamp,
-      eventType,
-      actor,
-      details,
-      previousHash,
-      hash
-    };
-
-    this.chain.push(newBlock);
-    this.saveChain();
-    return newBlock;
+  ): void {
+    this.queue = this.queue
+      .then(() => this.appendEvent(eventType, actor, details))
+      .then(() => undefined)
+      .catch(err => {
+        console.error('Audit ledger write failed:', err?.message || err);
+      });
   }
 
-  public getChain(): AuditBlock[] {
-    return [...this.chain];
+  public async getChain(): Promise<AuditBlock[]> {
+    const { data, error } = await this.supabase
+      .from('audit_log')
+      .select('*')
+      .order('idx', { ascending: true });
+    if (error) throw new Error(`Audit ledger read failed: ${error.message}`);
+    return (data ?? []).map(mapBlock);
   }
 
-  public getUserLogs(raNumber: string): AuditBlock[] {
-    return this.chain.filter(b => b.actor?.raNumber === raNumber);
+  public async getUserLogs(raNumber: string): Promise<AuditBlock[]> {
+    const { data, error } = await this.supabase
+      .from('audit_log')
+      .select('*')
+      .eq('actor->>raNumber', raNumber)
+      .order('idx', { ascending: true });
+    if (error) throw new Error(`Audit ledger read failed: ${error.message}`);
+    return (data ?? []).map(mapBlock);
   }
 
-  public getContestantLogs(candidateId: string, raNumber?: string): AuditBlock[] {
-    return this.chain.filter(b => {
-      // Matches candidateId in details (e.g. vote cast, vote changed, screening, candidate creation)
-      if (b.details?.candidateId === candidateId) return true;
-      // Matches candidate RA number in actor or details
-      if (raNumber && (b.actor?.raNumber === raNumber || b.details?.newVoterRA === raNumber || b.details?.voterRaNumber === raNumber)) return true;
-      // Matches office or candidate name
+  public async getContestantLogs(candidateId: string, raNumber?: string): Promise<AuditBlock[]> {
+    // Candidate-scoped entries live in details; fall back to a full scan for
+    // RA-linked entries (ledger reads are small and infrequent).
+    const { data, error } = await this.supabase
+      .from('audit_log')
+      .select('*')
+      .eq('details->>candidateId', candidateId)
+      .order('idx', { ascending: true });
+    if (error) throw new Error(`Audit ledger read failed: ${error.message}`);
+    const direct = (data ?? []).map(mapBlock);
+    if (!raNumber) return direct;
+
+    const chain = await this.getChain();
+    const extra = chain.filter(b => {
+      if (b.details?.candidateId === candidateId) return false; // already included
+      if (b.actor?.raNumber === raNumber) return true;
+      if (b.details?.newVoterRA === raNumber) return true;
+      if (b.details?.voterRaNumber === raNumber) return true;
       return false;
     });
+    return [...direct, ...extra].sort((a, b) => a.index - b.index);
   }
 
-  public verifyIntegrity(): VerificationResult {
-    if (this.chain.length === 0) {
+  public async verifyIntegrity(): Promise<VerificationResult> {
+    const chain = await this.getChain();
+    if (chain.length === 0) {
       return { valid: true, totalBlocks: 0 };
     }
 
-    for (let i = 0; i < this.chain.length; i++) {
-      const block = this.chain[i];
+    for (let i = 0; i < chain.length; i++) {
+      const block = chain[i];
 
-      // Verify previous hash chaining
       if (i > 0) {
-        const previousBlock = this.chain[i - 1];
+        const previousBlock = chain[i - 1];
         if (block.previousHash !== previousBlock.hash) {
           return {
             valid: false,
-            totalBlocks: this.chain.length,
+            totalBlocks: chain.length,
             tamperedBlockIndex: i,
             error: `Block #${i} previousHash does not match Block #${i - 1} hash.`
           };
         }
-      } else {
-        if (block.previousHash !== '0'.repeat(64)) {
-          return {
-            valid: false,
-            totalBlocks: this.chain.length,
-            tamperedBlockIndex: 0,
-            error: 'Genesis block previousHash is invalid.'
-          };
-        }
+      } else if (block.previousHash !== '0'.repeat(64)) {
+        return {
+          valid: false,
+          totalBlocks: chain.length,
+          tamperedBlockIndex: 0,
+          error: 'Genesis block previousHash is invalid.'
+        };
       }
 
-      // Verify current block hash
       const recalculatedHash = this.calculateHash(
         block.index,
         block.timestamp,
@@ -329,7 +242,7 @@ export class AuditLedger {
       if (block.hash !== recalculatedHash) {
         return {
           valid: false,
-          totalBlocks: this.chain.length,
+          totalBlocks: chain.length,
           tamperedBlockIndex: i,
           error: `Block #${i} hash mismatch: computed ${recalculatedHash}, recorded ${block.hash}.`
         };
@@ -338,7 +251,7 @@ export class AuditLedger {
 
     return {
       valid: true,
-      totalBlocks: this.chain.length
+      totalBlocks: chain.length
     };
   }
 }

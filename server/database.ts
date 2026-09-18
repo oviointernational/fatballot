@@ -1,5 +1,3 @@
-import fs from 'fs';
-import path from 'path';
 import crypto from 'crypto';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { hasSupabase, getSupabase } from './supabase';
@@ -14,17 +12,7 @@ import {
   ScreeningCriteria,
   CandidateScreening,
   ElectionAgent,
-  Observer,
-  initialSettings,
-  initialOffices,
-  initialCandidates,
-  initialVoters,
-  initialTimeline,
-  initialYCEC,
-  initialVotes,
-  initialScreeningCriteria,
-  initialAgents,
-  initialObservers
+  Observer
 } from './mockData';
 
 export interface UserSession {
@@ -36,344 +24,369 @@ export interface UserSession {
   deviceInfo?: string;
 }
 
-export interface MagicLinkRequest {
-  token: string;
-  raNumber: string;
-  email: string;
-  createdAt: string;
-  expiresAt: string;
-  used: boolean;
+// ---------------------------------------------------------------------------
+// Supabase-backed store. Single source of truth is the relational tables
+// created by supabase/schema.sql — no JSON blob, no local files. The method
+// names and shapes match the previous store so server/app.ts is unaffected
+// apart from awaiting (every method that touches the DB is async).
+// The server holds the SERVICE_ROLE key only; browsers never touch Supabase.
+// ---------------------------------------------------------------------------
+
+type Row = Record<string, any>;
+
+function cleanRA(ra: string): string {
+  return String(ra || '').replace(/^RA-?/i, '').trim();
 }
 
-export interface StoreData {
-  settings: SiteSettings;
-  offices: Office[];
-  candidates: CandidateProfile[];
-  voters: Voter[];
-  timeline: TimelineItem[];
-  ycec: YCECMember[];
-  votes: CastVote[];
-  sessions: UserSession[];
-  magicLinks: MagicLinkRequest[];
-  screeningCriteria: ScreeningCriteria[];
-  candidateScreenings: CandidateScreening[];
-  agents: ElectionAgent[];
-  observers: Observer[];
+function mapVoter(r: Row): Voter {
+  return {
+    id: r.id,
+    raNumber: r.ra_number,
+    email: r.email,
+    firstName: r.first_name,
+    middleName: r.middle_name ?? '',
+    lastName: r.last_name,
+    role: r.role,
+    isAccredited: !!r.is_accredited,
+    isScreened: !!r.is_screened,
+    assignedOfficeId: r.assigned_office_id ?? undefined,
+    isAgent: !!r.is_agent,
+    agentOfficeId: r.agent_office_id ?? undefined,
+    agentCandidateId: r.agent_candidate_id ?? undefined,
+    department: r.department ?? '',
+    phone: r.phone ?? '',
+    avatar: r.avatar ?? '',
+    registeredAt: r.registered_at,
+    passwordHash: r.password_hash ?? undefined
+  };
 }
 
-const DATA_DIR = path.join(process.cwd(), 'server', 'data');
-const STORE_FILE = path.join(DATA_DIR, 'store.json');
+function mapOffice(r: Row): Office {
+  return { id: r.id, title: r.title, order: r.order ?? 0, description: r.description ?? '', icon: r.icon ?? 'Crown' };
+}
+
+function mapCandidate(r: Row): CandidateProfile {
+  return {
+    id: r.id,
+    officeId: r.office_id ?? '',
+    name: r.name,
+    raNumber: r.ra_number,
+    avatar: r.avatar ?? '',
+    tagline: r.tagline ?? '',
+    vision: r.vision ?? '',
+    antecedent: r.antecedent ?? [],
+    currentOffices: r.current_offices ?? [],
+    achievements: r.achievements ?? [],
+    contactEmail: r.contact_email ?? ''
+  };
+}
+
+function mapVote(r: Row): CastVote {
+  return {
+    id: r.id,
+    voterRaNumber: r.voter_ra_number,
+    officeId: r.office_id,
+    choice: r.choice,
+    candidateId: r.candidate_id ?? undefined,
+    timestamp: r.timestamp,
+    ipAddress: r.ip_address ?? undefined
+  };
+}
+
+function mapTimeline(r: Row): TimelineItem {
+  return { id: r.id, order: r.order ?? 0, title: r.title, description: r.description ?? '', date: r.date, status: r.status, icon: r.icon ?? 'Clock' };
+}
+
+function mapYCEC(r: Row): YCECMember {
+  return { id: r.id, name: r.name, role: r.role, email: r.email, phone: r.phone ?? '', avatar: r.avatar ?? '', tenure: r.tenure ?? '' };
+}
+
+function mapCriteria(r: Row): ScreeningCriteria {
+  return { id: r.id, officeId: r.office_id, title: r.title, criteria: r.criteria ?? [] };
+}
+
+function mapScreening(r: Row): CandidateScreening {
+  return {
+    candidateId: r.candidate_id,
+    officeId: r.office_id,
+    results: r.results ?? [],
+    passedCount: r.passed_count ?? 0,
+    totalCount: r.total_count ?? 0,
+    percentage: r.percentage ?? 0,
+    isScreened: !!r.is_screened,
+    screenedAt: r.screened_at ?? ''
+  };
+}
+
+function mapAgent(r: Row): ElectionAgent {
+  return {
+    id: r.id,
+    voterId: r.voter_id,
+    voterRaNumber: r.voter_ra_number,
+    voterName: r.voter_name,
+    officeId: r.office_id,
+    candidateId: r.candidate_id,
+    candidateName: r.candidate_name,
+    assignedAt: r.assigned_at
+  };
+}
+
+function mapObserver(r: Row): Observer {
+  return {
+    id: r.id,
+    name: r.name,
+    rank: r.rank,
+    office: r.office ?? '',
+    phone: r.phone,
+    token: r.token,
+    createdAt: r.created_at,
+    lastActiveDeviceId: r.last_active_device_id ?? undefined
+  };
+}
+
+function mapSession(r: Row): UserSession {
+  return {
+    token: r.token,
+    raNumber: r.ra_number,
+    userId: r.user_id,
+    createdAt: r.created_at,
+    expiresAt: r.expires_at,
+    deviceInfo: r.device_info ?? undefined
+  };
+}
+
+function dbError(err: any, fallback: string): Error {
+  const msg = err?.message || fallback;
+  if (err?.code === '23505') {
+    if (msg.includes('voters_ra_number')) return new Error('A voter with this RA Number already exists.');
+    if (msg.includes('voters_email')) return new Error('A voter with this email already exists.');
+    if (msg.includes('candidates_ra_number')) return new Error('A contestant with this RA Number already exists.');
+    if (msg.includes('agents_voter_id')) return new Error('This voter is already assigned as an agent.');
+    if (msg.includes('observers_token')) return new Error('Observer token collision, please retry.');
+    return new Error('This record already exists.');
+  }
+  return new Error(msg || fallback);
+}
 
 export class Database {
-  private data: StoreData;
-  private supabase: SupabaseClient | null = null;
-  private supabaseReady = false;
-  private pendingWrite = false;
-  private autoRefreshTimer: NodeJS.Timeout | null = null;
+  private supabase: SupabaseClient;
 
   constructor() {
-    const usingSupabase = hasSupabase();
-    if (usingSupabase) {
-      this.supabase = getSupabase();
-    } else {
-      // Local/dev mode: disk-backed store. On a read-only filesystem (Vercel
-      // serverless) Supabase must be configured, so disk access is skipped.
-      this.ensureDataDir();
+    if (!hasSupabase()) {
+      throw new Error(
+        'Supabase is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY ' +
+        '(see .env.example), then run supabase/schema.sql on a fresh project.'
+      );
     }
-    this.data = this.loadData();
+    this.supabase = getSupabase();
   }
 
-  // Loads (or seeds) the store from Supabase. Must be awaited before serving
-  // requests so a fresh cold start never serves defaults over real data.
-  public async init() {
-    if (!this.supabase || this.supabaseReady) return;
-    await this.pullFromSupabase();
-    this.supabaseReady = true;
-    // Persist the guaranteed superadmin if the remote blob lacked one.
-    if (this.applySuperadminSeed(this.data)) {
-      await this.pushToSupabase(this.data);
-    }
-    this.startAutoRefresh();
+  // Ensures the placeholder Superadmin exists (fresh DBs) and applies
+  // SUPERADMIN_* environment overrides. Called once at boot.
+  public async init(): Promise<void> {
+    await this.ensureSuperadmin();
   }
 
-  private startAutoRefresh() {
-    if (this.autoRefreshTimer) clearInterval(this.autoRefreshTimer);
-    this.autoRefreshTimer = setInterval(() => {
-      if (this.supabase && this.supabaseReady && !this.pendingWrite) {
-        this.pullFromSupabase().catch(err =>
-          console.error('Supabase refresh failed:', err)
-        );
-      }
-    }, 15000);
-    this.autoRefreshTimer.unref?.();
-  }
-
-  private async pullFromSupabase() {
-    if (!this.supabase) return;
-    const { data, error } = await this.supabase
-      .from('app_store')
-      .select('data')
-      .eq('key', 'store')
-      .maybeSingle();
-
-    if (error) {
-      console.error('Supabase store read failed:', error.message);
-      return;
-    }
-
-    if (data?.data) {
-      this.data = this.normalizeStore(data.data as Partial<StoreData>);
-    } else {
-      // No blob persisted yet — seed the remote store with current data.
-      await this.pushToSupabase(this.data);
-    }
-  }
-
-  private async pushToSupabase(dataToSave: StoreData): Promise<void> {
-    if (!this.supabase) return;
-    const payload = JSON.parse(JSON.stringify(dataToSave));
-    const { error } = await this.supabase
-      .from('app_store')
-      .upsert({ key: 'store', data: payload, updated_at: new Date().toISOString() });
-    if (error) {
-      console.error('Supabase store save failed:', error.message);
-    }
-  }
-
-  private ensureDataDir() {
-    try {
-      if (!fs.existsSync(DATA_DIR)) {
-        fs.mkdirSync(DATA_DIR, { recursive: true });
-      }
-    } catch (err) {
-      // Read-only filesystem (serverless) — Supabase handles persistence.
-      console.warn('Local data dir unavailable, using Supabase only:', (err as Error).message);
-    }
-  }
-
-  private normalizeStore(parsed: Partial<StoreData>): StoreData {
-    if (typeof parsed !== 'object' || parsed === null) parsed = {};
-    // Ensure new arrays exist if loading from prior format
-    if (!parsed.screeningCriteria) parsed.screeningCriteria = [...initialScreeningCriteria];
-    if (!parsed.candidateScreenings) parsed.candidateScreenings = [];
-    if (!parsed.agents) parsed.agents = [...initialAgents];
-    if (!parsed.observers) parsed.observers = [...initialObservers];
-    if (parsed.settings && !parsed.settings.permissions) parsed.settings.permissions = { ...initialSettings.permissions };
-
-    const store: StoreData = {
-      settings: parsed.settings ?? { ...initialSettings },
-      offices: parsed.offices ?? [...initialOffices],
-      candidates: parsed.candidates ?? [...initialCandidates],
-      voters: parsed.voters ?? [...initialVoters],
-      timeline: parsed.timeline ?? [...initialTimeline],
-      ycec: parsed.ycec ?? [...initialYCEC],
-      votes: parsed.votes ?? [...initialVotes],
-      sessions: parsed.sessions ?? [],
-      magicLinks: parsed.magicLinks ?? [],
-      screeningCriteria: parsed.screeningCriteria ?? [...initialScreeningCriteria],
-      candidateScreenings: parsed.candidateScreenings ?? [],
-      agents: parsed.agents ?? [...initialAgents],
-      observers: parsed.observers ?? [...initialObservers]
-    };
-
-    // A superadmin account must always exist (fresh seeds and legacy stores).
-    this.applySuperadminSeed(store);
-    return store;
-  }
-
-  /**
-   * Guarantees exactly-once Superadmin presence and applies SUPERADMIN_*
-   * environment overrides (RA, email, names). The passwordless sign-in link
-   * is emailed to the Superadmin address, so production deployments point
-   * SUPERADMIN_EMAIL at a real inbox. Returns true when the store mutated.
-   */
-  private applySuperadminSeed(store: StoreData): boolean {
-    const envRA = (process.env.SUPERADMIN_RA || '1001').replace(/^RA-?/i, '').trim() || '1001';
+  public async ensureSuperadmin(): Promise<boolean> {
+    const envRA = cleanRA(process.env.SUPERADMIN_RA || '1001') || '1001';
     const envEmail = (process.env.SUPERADMIN_EMAIL || '').trim().toLowerCase();
     const envFirst = (process.env.SUPERADMIN_FIRST_NAME || '').trim();
     const envLast = (process.env.SUPERADMIN_LAST_NAME || '').trim();
-    let changed = false;
 
-    let superadmin =
-      store.voters.find(v => v.role === 'superadmin') ??
-      store.voters.find(v => v.raNumber.replace(/^RA-?/i, '').trim() === envRA);
+    const { data, error } = await this.supabase
+      .from('voters')
+      .select('*')
+      .eq('role', 'superadmin')
+      .limit(1)
+      .maybeSingle();
+    if (error) throw dbError(error, 'Failed to read voters.');
 
-    if (!superadmin) {
-      superadmin = {
-        id: `vot-superadmin`,
-        raNumber: envRA,
+    if (!data) {
+      const now = new Date().toISOString();
+      const { error: insErr } = await this.supabase.from('voters').insert({
+        id: 'vot-superadmin',
+        ra_number: envRA,
         email: envEmail || 'superadmin@fatballot.org',
-        firstName: envFirst || 'Electoral',
-        middleName: 'Chief',
-        lastName: envLast || 'SuperAdmin',
+        first_name: envFirst || 'Electoral',
+        middle_name: 'Chief',
+        last_name: envLast || 'SuperAdmin',
         role: 'superadmin',
-        isAccredited: true,
+        is_accredited: true,
         department: 'Electoral Commission Directorate',
         phone: '',
-        registeredAt: new Date().toISOString()
-      };
-      store.voters.unshift(superadmin);
+        avatar: '',
+        registered_at: now,
+        password_hash: null
+      });
+      if (insErr) throw dbError(insErr, 'Failed to seed superadmin.');
       return true;
     }
 
-    if (superadmin.role !== 'superadmin') {
-      superadmin.role = 'superadmin';
-      changed = true;
-    }
-    if (!superadmin.isAccredited) {
-      superadmin.isAccredited = true;
-      changed = true;
-    }
-    // Env overrides win when explicitly configured (e.g. first production
-    // deploy pointing the sign-in mailbox at a real address).
-    if (envEmail && superadmin.email.trim().toLowerCase() !== envEmail) {
-      superadmin.email = envEmail;
-      changed = true;
-    }
-    if (envFirst && superadmin.firstName !== envFirst) {
-      superadmin.firstName = envFirst;
-      changed = true;
-    }
-    if (envLast && superadmin.lastName !== envLast) {
-      superadmin.lastName = envLast;
-      changed = true;
-    }
-    return changed;
-  }
-
-  /** Public helper used by the production seed script. */
-  public ensureSuperadmin(): boolean {
-    const changed = this.applySuperadminSeed(this.data);
-    if (changed) this.saveData();
-    return changed;
-  }
-
-  private loadData(): StoreData {
-    // Supabase is the source of truth; init() pulls the real data. Skip disk.
-    if (!this.supabase) {
-      try {
-        if (fs.existsSync(STORE_FILE)) {
-          const raw = fs.readFileSync(STORE_FILE, 'utf-8');
-          const parsed = JSON.parse(raw);
-          return this.normalizeStore(parsed);
-        }
-      } catch (err) {
-        console.error('Error loading store file, falling back to defaults:', err);
-      }
-    }
-
-    const defaultData = this.normalizeStore({});
-    if (!this.supabase) {
-      this.saveData(defaultData);
-    }
-    return defaultData;
-  }
-
-  private saveData(dataToSave: StoreData = this.data) {
-    if (!this.supabase) {
-      try {
-        fs.writeFileSync(STORE_FILE, JSON.stringify(dataToSave, null, 2), 'utf-8');
-      } catch (err) {
-        console.error('Error saving store to disk:', err);
-      }
-      return;
-    }
-
-    if (this.supabaseReady) {
-      this.pendingWrite = true;
-      this.pushToSupabase(dataToSave)
-        .then(() => {
-          this.pendingWrite = false;
-        })
-        .catch(() => {
-          this.pendingWrite = false;
-        });
-    }
-  }
-
-  // --- Settings ---
-  public getSettings(): SiteSettings {
-    return this.data.settings;
-  }
-
-  public updateSettings(newSettings: Partial<SiteSettings>): SiteSettings {
-    this.data.settings = { ...this.data.settings, ...newSettings };
-    this.saveData();
-    return this.data.settings;
-  }
-
-  // --- Offices ---
-  public getOffices(): Office[] {
-    return this.data.offices.sort((a, b) => a.order - b.order);
-  }
-
-  public getOfficeById(id: string): Office | undefined {
-    return this.data.offices.find(o => o.id === id);
-  }
-
-  public addOffice(office: Omit<Office, 'id'>): Office {
-    const newOffice: Office = {
-      ...office,
-      id: `off-${Date.now()}`
-    };
-    this.data.offices.push(newOffice);
-    this.saveData();
-    return newOffice;
-  }
-
-  public deleteOffice(id: string): boolean {
-    const initialLen = this.data.offices.length;
-    this.data.offices = this.data.offices.filter(o => o.id !== id);
-    if (this.data.offices.length !== initialLen) {
-      this.saveData();
+    const updates: Row = {};
+    if (!data.is_accredited) updates.is_accredited = true;
+    if (envEmail && String(data.email).toLowerCase() !== envEmail) updates.email = envEmail;
+    if (envFirst && data.first_name !== envFirst) updates.first_name = envFirst;
+    if (envLast && data.last_name !== envLast) updates.last_name = envLast;
+    if (Object.keys(updates).length > 0) {
+      const { error: upErr } = await this.supabase.from('voters').update(updates).eq('id', data.id);
+      if (upErr) throw dbError(upErr, 'Failed to update superadmin.');
       return true;
     }
     return false;
   }
 
-  // --- Candidates ---
-  public getCandidates(): CandidateProfile[] {
-    return this.data.candidates;
+  // --- Settings ---
+  public async getSettings(): Promise<SiteSettings> {
+    const { data, error } = await this.supabase
+      .from('settings')
+      .select('data')
+      .eq('id', 1)
+      .maybeSingle();
+    if (error) throw dbError(error, 'Failed to read settings.');
+    if (!data?.data) throw new Error('Settings row missing. Run supabase/schema.sql on a fresh database.');
+    return data.data as SiteSettings;
   }
 
-  public getCandidatesByOffice(officeId: string): CandidateProfile[] {
-    return this.data.candidates.filter(c => c.officeId === officeId);
+  public async updateSettings(newSettings: Partial<SiteSettings>): Promise<SiteSettings> {
+    const current = await this.getSettings();
+    const merged = { ...current, ...newSettings };
+    const { error } = await this.supabase
+      .from('settings')
+      .update({ data: merged })
+      .eq('id', 1);
+    if (error) throw dbError(error, 'Failed to update settings.');
+    return merged;
   }
 
-  public getCandidateById(id: string): CandidateProfile | undefined {
-    return this.data.candidates.find(c => c.id === id);
+  // --- Offices ---
+  public async getOffices(): Promise<Office[]> {
+    const { data, error } = await this.supabase
+      .from('offices')
+      .select('*')
+      .order('order', { ascending: true });
+    if (error) throw dbError(error, 'Failed to read offices.');
+    return (data ?? []).map(mapOffice);
   }
 
-  public addCandidate(candidate: Omit<CandidateProfile, 'id'>): CandidateProfile {
-    const newCand: CandidateProfile = {
-      ...candidate,
-      id: `cand-${Date.now()}`
+  public async getOfficeById(id: string): Promise<Office | undefined> {
+    const { data, error } = await this.supabase
+      .from('offices')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+    if (error) throw dbError(error, 'Failed to read office.');
+    return data ? mapOffice(data) : undefined;
+  }
+
+  public async addOffice(office: Omit<Office, 'id'>): Promise<Office> {
+    const row = {
+      id: `off-${Date.now()}`,
+      title: office.title,
+      order: office.order ?? 0,
+      description: office.description ?? '',
+      icon: office.icon ?? 'Crown'
     };
-    this.data.candidates.push(newCand);
-    this.saveData();
-    return newCand;
+    const { error } = await this.supabase.from('offices').insert(row);
+    if (error) throw dbError(error, 'Failed to create office.');
+    return mapOffice(row);
+  }
+
+  public async deleteOffice(id: string): Promise<boolean> {
+    const { error, count } = await this.supabase
+      .from('offices')
+      .delete({ count: 'exact' })
+      .eq('id', id);
+    if (error) throw dbError(error, 'Failed to delete office.');
+    return (count ?? 0) > 0;
+  }
+
+  // --- Candidates ---
+  public async getCandidates(): Promise<CandidateProfile[]> {
+    const { data, error } = await this.supabase.from('candidates').select('*');
+    if (error) throw dbError(error, 'Failed to read candidates.');
+    return (data ?? []).map(mapCandidate);
+  }
+
+  public async getCandidatesByOffice(officeId: string): Promise<CandidateProfile[]> {
+    const { data, error } = await this.supabase
+      .from('candidates')
+      .select('*')
+      .eq('office_id', officeId);
+    if (error) throw dbError(error, 'Failed to read candidates.');
+    return (data ?? []).map(mapCandidate);
+  }
+
+  public async getCandidateById(id: string): Promise<CandidateProfile | undefined> {
+    const { data, error } = await this.supabase
+      .from('candidates')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+    if (error) throw dbError(error, 'Failed to read candidate.');
+    return data ? mapCandidate(data) : undefined;
+  }
+
+  public async addCandidate(candidate: Omit<CandidateProfile, 'id'>): Promise<CandidateProfile> {
+    const row = {
+      id: `cand-${Date.now()}`,
+      office_id: candidate.officeId,
+      name: candidate.name,
+      ra_number: candidate.raNumber,
+      avatar: candidate.avatar ?? '',
+      tagline: candidate.tagline ?? '',
+      vision: candidate.vision ?? '',
+      antecedent: candidate.antecedent ?? [],
+      current_offices: candidate.currentOffices ?? [],
+      achievements: candidate.achievements ?? [],
+      contact_email: candidate.contactEmail ?? ''
+    };
+    const { error } = await this.supabase.from('candidates').insert(row);
+    if (error) throw dbError(error, 'Failed to register candidate.');
+    return mapCandidate(row);
   }
 
   // --- Voters ---
-  public getVoters(): Voter[] {
-    return this.data.voters;
+  public async getVoters(): Promise<Voter[]> {
+    const { data, error } = await this.supabase
+      .from('voters')
+      .select('*')
+      .order('registered_at', { ascending: true });
+    if (error) throw dbError(error, 'Failed to read voters.');
+    return (data ?? []).map(mapVoter);
   }
 
-  public getVoterByRA(raNumber: string): Voter | undefined {
-    const cleanRA = raNumber.replace(/^RA-?/i, '').trim();
-    return this.data.voters.find(v => v.raNumber.replace(/^RA-?/i, '').trim() === cleanRA);
+  public async getVoterByRA(raNumber: string): Promise<Voter | undefined> {
+    const { data, error } = await this.supabase
+      .from('voters')
+      .select('*')
+      .eq('ra_number', cleanRA(raNumber))
+      .maybeSingle();
+    if (error) throw dbError(error, 'Failed to read voter.');
+    return data ? mapVoter(data) : undefined;
   }
 
-  public getVoterById(id: string): Voter | undefined {
-    return this.data.voters.find(v => v.id === id);
+  public async getVoterById(id: string): Promise<Voter | undefined> {
+    const { data, error } = await this.supabase
+      .from('voters')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+    if (error) throw dbError(error, 'Failed to read voter.');
+    return data ? mapVoter(data) : undefined;
   }
 
-  public getVoterByEmail(email: string): Voter | undefined {
-    const clean = email.trim().toLowerCase();
-    return this.data.voters.find(v => v.email.trim().toLowerCase() === clean);
+  public async getVoterByEmail(email: string): Promise<Voter | undefined> {
+    const { data, error } = await this.supabase
+      .from('voters')
+      .select('*')
+      .ilike('email', String(email).trim())
+      .limit(1)
+      .maybeSingle();
+    if (error) throw dbError(error, 'Failed to read voter.');
+    return data ? mapVoter(data) : undefined;
   }
 
-  public addVoter(payload: {
+  public async addVoter(payload: {
     email: string;
     firstName: string;
     middleName?: string;
@@ -382,469 +395,543 @@ export class Database {
     role?: 'voter' | 'contestant' | 'committee' | 'superadmin';
     department?: string;
     phone?: string;
-  }): Voter {
-    const cleanRA = payload.raNumber.replace(/^RA-?/i, '').trim();
-    const existing = this.getVoterByRA(cleanRA);
+  }): Promise<Voter> {
+    const clean = cleanRA(payload.raNumber);
+    const existing = await this.getVoterByRA(clean);
     if (existing) {
-      throw new Error(`A voter with RA Number ${cleanRA} already exists.`);
+      throw new Error(`A voter with RA Number ${clean} already exists.`);
+    }
+    const emailTaken = await this.getVoterByEmail(payload.email);
+    if (emailTaken) {
+      throw new Error('A voter with this email already exists.');
     }
 
     // REQUIREMENT: users are not accredited during registration!
-    const newVoter: Voter = {
+    const row = {
       id: `vot-${Date.now()}`,
-      raNumber: cleanRA,
-      email: payload.email.trim().toLowerCase(),
-      firstName: payload.firstName.trim(),
-      middleName: payload.middleName?.trim() || '',
-      lastName: payload.lastName.trim(),
+      ra_number: clean,
+      email: String(payload.email).trim().toLowerCase(),
+      first_name: String(payload.firstName).trim(),
+      middle_name: String(payload.middleName ?? '').trim(),
+      last_name: String(payload.lastName).trim(),
       role: payload.role || 'voter',
-      isAccredited: false, // Default unaccredited on registration!
-      isScreened: false,
+      is_accredited: false,
+      is_screened: false,
       department: payload.department || 'General Constituent',
       phone: payload.phone || '',
-      registeredAt: new Date().toISOString()
+      avatar: '',
+      registered_at: new Date().toISOString(),
+      password_hash: null
     };
-
-    this.data.voters.push(newVoter);
-    this.saveData();
-    return newVoter;
+    const { error } = await this.supabase.from('voters').insert(row);
+    if (error) throw dbError(error, 'Failed to register voter.');
+    return mapVoter(row);
   }
 
-  public updateVoter(id: string, updates: Partial<Voter>): Voter {
-    const idx = this.data.voters.findIndex(v => v.id === id);
-    if (idx === -1) throw new Error('Voter not found');
-    this.data.voters[idx] = { ...this.data.voters[idx], ...updates };
-    this.saveData();
-    return this.data.voters[idx];
+  public async updateVoter(id: string, updates: Partial<Voter>): Promise<Voter> {
+    const row: Row = {};
+    if (updates.email !== undefined) row.email = updates.email;
+    if (updates.firstName !== undefined) row.first_name = updates.firstName;
+    if (updates.middleName !== undefined) row.middle_name = updates.middleName;
+    if (updates.lastName !== undefined) row.last_name = updates.lastName;
+    if (updates.role !== undefined) row.role = updates.role;
+    if (updates.isAccredited !== undefined) row.is_accredited = updates.isAccredited;
+    if (updates.isScreened !== undefined) row.is_screened = updates.isScreened;
+    if (updates.assignedOfficeId !== undefined) row.assigned_office_id = updates.assignedOfficeId ?? null;
+    if (updates.isAgent !== undefined) row.is_agent = updates.isAgent;
+    if (updates.agentOfficeId !== undefined) row.agent_office_id = updates.agentOfficeId ?? null;
+    if (updates.agentCandidateId !== undefined) row.agent_candidate_id = updates.agentCandidateId ?? null;
+    if (updates.department !== undefined) row.department = updates.department;
+    if (updates.phone !== undefined) row.phone = updates.phone;
+    if (updates.avatar !== undefined) row.avatar = updates.avatar;
+    if (updates.passwordHash !== undefined) row.password_hash = updates.passwordHash ?? null;
+
+    const { data, error } = await this.supabase
+      .from('voters')
+      .update(row)
+      .eq('id', id)
+      .select()
+      .maybeSingle();
+    if (error) throw dbError(error, 'Failed to update voter.');
+    if (!data) throw new Error('Voter not found');
+    return mapVoter(data);
   }
 
-  public accreditVoter(id: string, isAccredited: boolean): Voter {
-    const voter = this.updateVoter(id, { isAccredited });
-    return voter;
+  public async accreditVoter(id: string, isAccredited: boolean): Promise<Voter> {
+    return this.updateVoter(id, { isAccredited });
   }
 
-  public deleteVoter(id: string): boolean {
-    const initialLen = this.data.voters.length;
-    this.data.voters = this.data.voters.filter(v => v.id !== id);
-    if (this.data.voters.length !== initialLen) {
-      this.saveData();
-      return true;
-    }
-    return false;
+  public async deleteVoter(id: string): Promise<boolean> {
+    const { error, count } = await this.supabase
+      .from('voters')
+      .delete({ count: 'exact' })
+      .eq('id', id);
+    if (error) throw dbError(error, 'Failed to delete voter.');
+    return (count ?? 0) > 0;
   }
 
   // --- Committee Admins ---
-  public getCommitteeAdmins(): Voter[] {
-    return this.data.voters.filter(v => v.role === 'committee');
+  public async getCommitteeAdmins(): Promise<Voter[]> {
+    const { data, error } = await this.supabase
+      .from('voters')
+      .select('*')
+      .eq('role', 'committee');
+    if (error) throw dbError(error, 'Failed to read committee admins.');
+    return (data ?? []).map(mapVoter);
   }
 
-  public addCommitteeAdmins(voterIds: string[]): Voter[] {
+  public async addCommitteeAdmins(voterIds: string[]): Promise<Voter[]> {
     const updated: Voter[] = [];
     for (const vid of voterIds) {
-      const voter = this.getVoterById(vid);
+      const voter = await this.getVoterById(vid);
       if (voter && voter.role !== 'superadmin') {
-        voter.role = 'committee';
-        updated.push(voter);
+        updated.push(await this.updateVoter(vid, { role: 'committee' }));
       }
     }
-    this.saveData();
     return updated;
   }
 
-  public removeCommitteeAdmin(voterId: string): Voter {
-    const voter = this.getVoterById(voterId);
+  public async removeCommitteeAdmin(voterId: string): Promise<Voter> {
+    const voter = await this.getVoterById(voterId);
     if (!voter) throw new Error('Voter not found');
-    voter.role = 'voter';
-    if (this.data.settings.permissions) {
-      const p = this.data.settings.permissions;
-      p.canRegisterUsers = p.canRegisterUsers.filter(id => id !== voter.id && id !== voter.raNumber);
-      p.canAccreditUsers = p.canAccreditUsers.filter(id => id !== voter.id && id !== voter.raNumber);
-      p.canCreateOffices = p.canCreateOffices.filter(id => id !== voter.id && id !== voter.raNumber);
-      p.canAssignOffices = p.canAssignOffices.filter(id => id !== voter.id && id !== voter.raNumber);
-      p.canCreateScreeningCriteria = p.canCreateScreeningCriteria.filter(id => id !== voter.id && id !== voter.raNumber);
-      p.canAssignAgents = p.canAssignAgents.filter(id => id !== voter.id && id !== voter.raNumber);
-      p.canCreateObservers = p.canCreateObservers.filter(id => id !== voter.id && id !== voter.raNumber);
+    const settings = await this.getSettings();
+    if (settings.permissions) {
+      const p = settings.permissions;
+      const drop = (list: string[]) => list.filter(id => id !== voter.id && id !== voter.raNumber);
+      p.canRegisterUsers = drop(p.canRegisterUsers);
+      p.canAccreditUsers = drop(p.canAccreditUsers);
+      p.canCreateOffices = drop(p.canCreateOffices);
+      p.canAssignOffices = drop(p.canAssignOffices);
+      p.canCreateScreeningCriteria = drop(p.canCreateScreeningCriteria);
+      p.canAssignAgents = drop(p.canAssignAgents);
+      p.canCreateObservers = drop(p.canCreateObservers);
+      await this.updateSettings({ permissions: p });
     }
-    this.saveData();
-    return voter;
+    return this.updateVoter(voterId, { role: 'voter' });
   }
 
-  // --- Assign Offices (A user cannot be assigned more than one office; makes them contestant) ---
-  public assignOffice(voterId: string, officeId: string): { voter: Voter; candidate: CandidateProfile } {
-    const voter = this.getVoterById(voterId);
+  // --- Assign Offices (one office per voter; makes them a contestant) ---
+  public async assignOffice(voterId: string, officeId: string): Promise<{ voter: Voter; candidate: CandidateProfile }> {
+    const voter = await this.getVoterById(voterId);
     if (!voter) throw new Error('Voter not found.');
 
-    const office = this.getOfficeById(officeId);
+    const office = await this.getOfficeById(officeId);
     if (!office) throw new Error('Office not found.');
 
     // RULE: A user cannot be assigned more than one office!
     if (voter.assignedOfficeId && voter.assignedOfficeId !== officeId) {
-      const currentOffice = this.getOfficeById(voter.assignedOfficeId);
+      const currentOffice = await this.getOfficeById(voter.assignedOfficeId);
       throw new Error(`User is already contesting for "${currentOffice?.title || 'another office'}". A user cannot be assigned more than one office.`);
     }
 
-    // Update voter status
-    voter.role = 'contestant';
-    voter.assignedOfficeId = officeId;
-    voter.isScreened = voter.isScreened || false;
+    const updatedVoter = await this.updateVoter(voterId, {
+      role: 'contestant',
+      assignedOfficeId: officeId,
+      isScreened: voter.isScreened || false
+    });
 
-    // Check if candidate profile exists for this RA Number
-    let cand = this.data.candidates.find(c => c.raNumber === voter.raNumber);
-    if (cand) {
-      cand.officeId = officeId;
+    // Reuse the candidate profile for this RA Number if one exists.
+    const { data: existing } = await this.supabase
+      .from('candidates')
+      .select('*')
+      .eq('ra_number', voter.raNumber)
+      .maybeSingle();
+
+    let candidate: CandidateProfile;
+    if (existing) {
+      const { data: moved, error } = await this.supabase
+        .from('candidates')
+        .update({ office_id: officeId })
+        .eq('id', existing.id)
+        .select()
+        .maybeSingle();
+      if (error) throw dbError(error, 'Failed to move candidate.');
+      candidate = mapCandidate(moved);
     } else {
-      cand = {
-        id: `cand-${Date.now()}`,
+      candidate = await this.addCandidate({
         officeId,
         name: `${voter.firstName} ${voter.middleName ? voter.middleName + ' ' : ''}${voter.lastName}`,
         raNumber: voter.raNumber,
         avatar: voter.avatar || `https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=400&q=80`,
         tagline: `Committed to service and leadership in ${office.title}.`,
         vision: `To lead the office of ${office.title} with complete transparency, excellence, and dedication to all constituents.`,
-        antecedent: ["Nominated by Electoral Assembly", "Certified Community Member"],
+        antecedent: ['Nominated by Electoral Assembly', 'Certified Community Member'],
         currentOffices: [office.title],
-        achievements: ["Successfully completed nomination filing"],
+        achievements: ['Successfully completed nomination filing'],
         contactEmail: voter.email
-      };
-      this.data.candidates.push(cand);
+      });
     }
 
-    this.saveData();
-    return { voter, candidate: cand };
+    return { voter: updatedVoter, candidate };
   }
 
-  public unassignOffice(voterId: string): Voter {
-    const voter = this.getVoterById(voterId);
+  public async unassignOffice(voterId: string): Promise<Voter> {
+    const voter = await this.getVoterById(voterId);
     if (!voter) throw new Error('Voter not found.');
 
     const oldOfficeId = voter.assignedOfficeId;
-    voter.assignedOfficeId = undefined;
-    voter.role = 'voter';
-    voter.isScreened = false;
+    const updated = await this.updateVoter(voterId, {
+      assignedOfficeId: undefined,
+      role: 'voter',
+      isScreened: false
+    });
 
-    // Remove candidate profile
     if (oldOfficeId) {
-      this.data.candidates = this.data.candidates.filter(c => c.raNumber !== voter.raNumber);
+      await this.supabase.from('candidates').delete().eq('ra_number', voter.raNumber);
     }
-
-    this.saveData();
-    return voter;
+    return updated;
   }
 
   // --- Screening Criteria & Screening Evaluation ---
-  public getScreeningCriteria(officeId?: string): ScreeningCriteria[] {
-    if (officeId) {
-      return this.data.screeningCriteria.filter(sc => sc.officeId === officeId);
-    }
-    return this.data.screeningCriteria;
+  public async getScreeningCriteria(officeId?: string): Promise<ScreeningCriteria[]> {
+    let q = this.supabase.from('screening_criteria').select('*');
+    if (officeId) q = q.eq('office_id', officeId);
+    const { data, error } = await q;
+    if (error) throw dbError(error, 'Failed to read screening criteria.');
+    return (data ?? []).map(mapCriteria);
   }
 
-  public saveScreeningCriteria(officeId: string, title: string, criteria: string[]): ScreeningCriteria {
-    const existingIdx = this.data.screeningCriteria.findIndex(sc => sc.officeId === officeId);
-    if (existingIdx >= 0) {
-      this.data.screeningCriteria[existingIdx].title = title;
-      this.data.screeningCriteria[existingIdx].criteria = criteria;
-      this.saveData();
-      return this.data.screeningCriteria[existingIdx];
-    } else {
-      const newCrit: ScreeningCriteria = {
-        id: `crit-${Date.now()}`,
-        officeId,
-        title,
-        criteria
-      };
-      this.data.screeningCriteria.push(newCrit);
-      this.saveData();
-      return newCrit;
-    }
+  public async saveScreeningCriteria(officeId: string, title: string, criteria: string[]): Promise<ScreeningCriteria> {
+    const { data, error } = await this.supabase
+      .from('screening_criteria')
+      .upsert(
+        { id: `crit-${Date.now()}`, office_id: officeId, title, criteria },
+        { onConflict: 'office_id', ignoreDuplicates: false }
+      )
+      .select();
+    if (error) throw dbError(error, 'Failed to save screening criteria.');
+    const row = (data ?? [])[0];
+    if (!row) throw new Error('Failed to save screening criteria.');
+    const list = await this.getScreeningCriteria(officeId);
+    return list[0] ?? mapCriteria(row);
   }
 
-  public deleteScreeningCriteria(id: string): boolean {
-    const initialLen = this.data.screeningCriteria.length;
-    this.data.screeningCriteria = this.data.screeningCriteria.filter(sc => sc.id !== id);
-    if (this.data.screeningCriteria.length !== initialLen) {
-      this.saveData();
-      return true;
-    }
-    return false;
+  public async deleteScreeningCriteria(id: string): Promise<boolean> {
+    const { error, count } = await this.supabase
+      .from('screening_criteria')
+      .delete({ count: 'exact' })
+      .eq('id', id);
+    if (error) throw dbError(error, 'Failed to delete screening criteria.');
+    return (count ?? 0) > 0;
   }
 
-  public screenCandidate(
+  public async screenCandidate(
     candidateId: string,
     officeId: string,
     results: { criterion: string; passed: boolean }[]
-  ): CandidateScreening {
+  ): Promise<CandidateScreening> {
     const totalCount = results.length;
     const passedCount = results.filter(r => r.passed).length;
     const percentage = totalCount > 0 ? Math.round((passedCount / totalCount) * 100) : 0;
-    
-    // RULE: Total must be 50% or more. So if 6 criteria, contestant must get 3 or more to be declared screened.
+
+    // RULE: >= 50% to be declared screened.
     const isScreened = totalCount > 0 && passedCount >= Math.ceil(totalCount / 2);
 
-    const screeningRecord: CandidateScreening = {
-      candidateId,
-      officeId,
+    const row = {
+      candidate_id: candidateId,
+      office_id: officeId,
       results,
-      passedCount,
-      totalCount,
+      passed_count: passedCount,
+      total_count: totalCount,
       percentage,
-      isScreened,
-      screenedAt: new Date().toISOString()
+      is_screened: isScreened,
+      screened_at: new Date().toISOString()
     };
+    const { error } = await this.supabase
+      .from('candidate_screenings')
+      .upsert(row, { onConflict: 'candidate_id', ignoreDuplicates: false });
+    if (error) throw dbError(error, 'Failed to record screening.');
 
-    const existingIdx = this.data.candidateScreenings.findIndex(cs => cs.candidateId === candidateId);
-    if (existingIdx >= 0) {
-      this.data.candidateScreenings[existingIdx] = screeningRecord;
-    } else {
-      this.data.candidateScreenings.push(screeningRecord);
-    }
-
-    // Update matching voter isScreened status
-    const cand = this.getCandidateById(candidateId);
+    const cand = await this.getCandidateById(candidateId);
     if (cand) {
-      const voter = this.getVoterByRA(cand.raNumber);
-      if (voter) {
-        voter.isScreened = isScreened;
-      }
+      const voter = await this.getVoterByRA(cand.raNumber);
+      if (voter) await this.updateVoter(voter.id, { isScreened });
     }
 
-    this.saveData();
-    return screeningRecord;
+    return mapScreening(row);
   }
 
-  public getCandidateScreening(candidateId: string): CandidateScreening | undefined {
-    return this.data.candidateScreenings.find(cs => cs.candidateId === candidateId);
+  public async getCandidateScreening(candidateId: string): Promise<CandidateScreening | undefined> {
+    const { data, error } = await this.supabase
+      .from('candidate_screenings')
+      .select('*')
+      .eq('candidate_id', candidateId)
+      .maybeSingle();
+    if (error) throw dbError(error, 'Failed to read screening.');
+    return data ? mapScreening(data) : undefined;
   }
 
   // --- Agents ---
-  public getAgents(): ElectionAgent[] {
-    return this.data.agents;
+  public async getAgents(): Promise<ElectionAgent[]> {
+    const { data, error } = await this.supabase.from('agents').select('*');
+    if (error) throw dbError(error, 'Failed to read agents.');
+    return (data ?? []).map(mapAgent);
   }
 
-  public addAgent(voterId: string, officeId: string, candidateId: string): ElectionAgent {
-    const voter = this.getVoterById(voterId);
+  public async addAgent(voterId: string, officeId: string, candidateId: string): Promise<ElectionAgent> {
+    const voter = await this.getVoterById(voterId);
     if (!voter) throw new Error('Voter not found.');
 
-    const cand = this.getCandidateById(candidateId);
+    const cand = await this.getCandidateById(candidateId);
     if (!cand) throw new Error('Contestant not found.');
 
-    const office = this.getOfficeById(officeId);
+    const office = await this.getOfficeById(officeId);
     if (!office) throw new Error('Office not found.');
 
-    // Check if voter is already an agent
-    const existingAgent = this.data.agents.find(a => a.voterId === voterId);
-    if (existingAgent) {
-      throw new Error(`This voter is already assigned as an agent for ${existingAgent.candidateName}.`);
+    const { data: existing } = await this.supabase
+      .from('agents')
+      .select('*')
+      .eq('voter_id', voterId)
+      .maybeSingle();
+    if (existing) {
+      throw new Error(`This voter is already assigned as an agent for ${existing.candidate_name}.`);
     }
 
-    const agent: ElectionAgent = {
+    const row = {
       id: `agent-${Date.now()}`,
-      voterId: voter.id,
-      voterRaNumber: voter.raNumber,
-      voterName: `${voter.firstName} ${voter.lastName}`,
-      officeId,
-      candidateId: cand.id,
-      candidateName: cand.name,
-      assignedAt: new Date().toISOString()
+      voter_id: voter.id,
+      voter_ra_number: voter.raNumber,
+      voter_name: `${voter.firstName} ${voter.lastName}`,
+      office_id: officeId,
+      candidate_id: cand.id,
+      candidate_name: cand.name,
+      assigned_at: new Date().toISOString()
     };
+    const { error } = await this.supabase.from('agents').insert(row);
+    if (error) throw dbError(error, 'Failed to assign agent.');
 
-    voter.isAgent = true;
-    voter.agentOfficeId = officeId;
-    voter.agentCandidateId = cand.id;
-
-    this.data.agents.push(agent);
-    this.saveData();
-    return agent;
+    await this.updateVoter(voter.id, {
+      isAgent: true,
+      agentOfficeId: officeId,
+      agentCandidateId: cand.id
+    });
+    return mapAgent(row);
   }
 
-  public deleteAgent(agentId: string): boolean {
-    const agent = this.data.agents.find(a => a.id === agentId);
+  public async deleteAgent(agentId: string): Promise<boolean> {
+    const { data: agent } = await this.supabase
+      .from('agents')
+      .select('*')
+      .eq('id', agentId)
+      .maybeSingle();
     if (agent) {
-      const voter = this.getVoterById(agent.voterId);
-      if (voter) {
-        voter.isAgent = false;
-        voter.agentOfficeId = undefined;
-        voter.agentCandidateId = undefined;
-      }
-      this.data.agents = this.data.agents.filter(a => a.id !== agentId);
-      this.saveData();
+      await this.updateVoter(agent.voter_id, {
+        isAgent: false,
+        agentOfficeId: undefined,
+        agentCandidateId: undefined
+      }).catch(() => undefined);
+      const { error } = await this.supabase.from('agents').delete().eq('id', agentId);
+      if (error) throw dbError(error, 'Failed to remove agent.');
       return true;
     }
     return false;
   }
 
-  // --- Observers (Unique links, read-only, single-device enforced) ---
-  public getObservers(): Observer[] {
-    return this.data.observers;
+  // --- Observers (unique links, read-only, single-device enforced) ---
+  public async getObservers(): Promise<Observer[]> {
+    const { data, error } = await this.supabase.from('observers').select('*');
+    if (error) throw dbError(error, 'Failed to read observers.');
+    return (data ?? []).map(mapObserver);
   }
 
-  public addObserver(name: string, rank: string, office: string, phone: string): Observer {
-    const token = `obs_${crypto.randomBytes(16).toString('hex')}`;
-    const newObserver: Observer = {
+  public async addObserver(name: string, rank: string, office: string, phone: string): Promise<Observer> {
+    const row = {
       id: `obs-${Date.now()}`,
       name: name.trim(),
       rank: rank.trim(),
       office: office?.trim() || '',
       phone: phone.trim(),
-      token,
-      createdAt: new Date().toISOString()
+      token: `obs_${crypto.randomBytes(16).toString('hex')}`,
+      created_at: new Date().toISOString(),
+      last_active_device_id: null
     };
-
-    this.data.observers.push(newObserver);
-    this.saveData();
-    return newObserver;
+    const { error } = await this.supabase.from('observers').insert(row);
+    if (error) throw dbError(error, 'Failed to create observer.');
+    return mapObserver(row);
   }
 
-  public regenerateObserverToken(observerId: string): Observer {
-    const obs = this.data.observers.find(o => o.id === observerId);
-    if (!obs) throw new Error('Observer not found.');
-
-    obs.token = `obs_${crypto.randomBytes(16).toString('hex')}`;
-    obs.lastActiveDeviceId = undefined; // reset single device binding
-    this.saveData();
-    return obs;
+  public async regenerateObserverToken(observerId: string): Promise<Observer> {
+    const { data, error } = await this.supabase
+      .from('observers')
+      .update({
+        token: `obs_${crypto.randomBytes(16).toString('hex')}`,
+        last_active_device_id: null
+      })
+      .eq('id', observerId)
+      .select()
+      .maybeSingle();
+    if (error) throw dbError(error, 'Failed to regenerate link.');
+    if (!data) throw new Error('Observer not found.');
+    return mapObserver(data);
   }
 
-  public deleteObserver(observerId: string): boolean {
-    const initialLen = this.data.observers.length;
-    this.data.observers = this.data.observers.filter(o => o.id !== observerId);
-    if (this.data.observers.length !== initialLen) {
-      this.saveData();
-      return true;
-    }
-    return false;
+  public async deleteObserver(observerId: string): Promise<boolean> {
+    const { error, count } = await this.supabase
+      .from('observers')
+      .delete({ count: 'exact' })
+      .eq('id', observerId);
+    if (error) throw dbError(error, 'Failed to delete observer.');
+    return (count ?? 0) > 0;
   }
 
-  public verifyObserverToken(token: string, deviceId?: string): Observer {
-    const obs = this.data.observers.find(o => o.token === token);
-    if (!obs) {
+  public async verifyObserverToken(token: string, deviceId?: string): Promise<Observer> {
+    const { data, error } = await this.supabase
+      .from('observers')
+      .select('*')
+      .eq('token', token)
+      .maybeSingle();
+    if (error) throw dbError(error, 'Failed to verify observer.');
+    if (!data) {
       throw new Error('Invalid observer credential link.');
     }
 
-    // SINGLE DEVICE POLICY FOR OBSERVER:
-    // "Observer can only use the link in not more than one device at a time."
-    if (deviceId) {
-      if (!obs.lastActiveDeviceId) {
-        obs.lastActiveDeviceId = deviceId;
-        this.saveData();
-      } else if (obs.lastActiveDeviceId !== deviceId) {
-        // Transfer / bind to new device and invalidate previous device
-        obs.lastActiveDeviceId = deviceId;
-        this.saveData();
-      }
+    // SINGLE DEVICE POLICY: transfer / bind to the newest device.
+    if (deviceId && data.last_active_device_id !== deviceId) {
+      await this.supabase
+        .from('observers')
+        .update({ last_active_device_id: deviceId })
+        .eq('id', data.id);
+      data.last_active_device_id = deviceId;
     }
-
-    return obs;
+    return mapObserver(data);
   }
 
   // --- Timeline ---
-  public getTimeline(): TimelineItem[] {
-    return this.data.timeline.sort((a, b) => a.order - b.order);
+  public async getTimeline(): Promise<TimelineItem[]> {
+    const { data, error } = await this.supabase
+      .from('timeline')
+      .select('*')
+      .order('order', { ascending: true });
+    if (error) throw dbError(error, 'Failed to read timeline.');
+    return (data ?? []).map(mapTimeline);
   }
 
-  public addTimelineItem(item: Omit<TimelineItem, 'id'>): TimelineItem {
-    const newItem: TimelineItem = { ...item, id: `time-${Date.now()}` };
-    this.data.timeline.push(newItem);
-    this.saveData(this.data);
-    return newItem;
+  public async addTimelineItem(item: Omit<TimelineItem, 'id'>): Promise<TimelineItem> {
+    const row = {
+      id: `time-${Date.now()}`,
+      order: item.order ?? 99,
+      title: item.title,
+      description: item.description ?? '',
+      date: item.date,
+      status: item.status ?? 'upcoming',
+      icon: item.icon ?? 'Clock'
+    };
+    const { error } = await this.supabase.from('timeline').insert(row);
+    if (error) throw dbError(error, 'Failed to add timeline item.');
+    return mapTimeline(row);
   }
 
-  public updateTimelineItem(id: string, updates: Partial<TimelineItem>): TimelineItem | null {
-    const idx = this.data.timeline.findIndex(t => t.id === id);
-    if (idx === -1) return null;
-    this.data.timeline[idx] = { ...this.data.timeline[idx], ...updates };
-    this.saveData(this.data);
-    return this.data.timeline[idx];
+  public async updateTimelineItem(id: string, updates: Partial<TimelineItem>): Promise<TimelineItem | null> {
+    const row: Row = {};
+    if (updates.order !== undefined) row.order = updates.order;
+    if (updates.title !== undefined) row.title = updates.title;
+    if (updates.description !== undefined) row.description = updates.description;
+    if (updates.date !== undefined) row.date = updates.date;
+    if (updates.status !== undefined) row.status = updates.status;
+    if (updates.icon !== undefined) row.icon = updates.icon;
+    const { data, error } = await this.supabase
+      .from('timeline')
+      .update(row)
+      .eq('id', id)
+      .select()
+      .maybeSingle();
+    if (error) throw dbError(error, 'Failed to update timeline item.');
+    return data ? mapTimeline(data) : null;
   }
 
-  public deleteTimelineItem(id: string): boolean {
-    const before = this.data.timeline.length;
-    this.data.timeline = this.data.timeline.filter(t => t.id !== id);
-    if (this.data.timeline.length !== before) {
-      this.saveData(this.data);
-      return true;
-    }
-    return false;
+  public async deleteTimelineItem(id: string): Promise<boolean> {
+    const { error, count } = await this.supabase
+      .from('timeline')
+      .delete({ count: 'exact' })
+      .eq('id', id);
+    if (error) throw dbError(error, 'Failed to delete timeline item.');
+    return (count ?? 0) > 0;
   }
 
   // --- YCEC ---
-  public getYCEC(): YCECMember[] {
-    return this.data.ycec;
+  public async getYCEC(): Promise<YCECMember[]> {
+    const { data, error } = await this.supabase.from('ycec_members').select('*');
+    if (error) throw dbError(error, 'Failed to read YCEC.');
+    return (data ?? []).map(mapYCEC);
   }
 
   // --- Votes ---
-  public getVotes(): CastVote[] {
-    return this.data.votes;
+  public async getVotes(): Promise<CastVote[]> {
+    const { data, error } = await this.supabase.from('votes').select('*');
+    if (error) throw dbError(error, 'Failed to read votes.');
+    return (data ?? []).map(mapVote);
   }
 
-  public getVotesByVoter(raNumber: string): CastVote[] {
-    const cleanRA = raNumber.replace(/^RA-?/i, '').trim();
-    return this.data.votes.filter(v => v.voterRaNumber.replace(/^RA-?/i, '').trim() === cleanRA);
+  public async getVotesByVoter(raNumber: string): Promise<CastVote[]> {
+    const { data, error } = await this.supabase
+      .from('votes')
+      .select('*')
+      .eq('voter_ra_number', cleanRA(raNumber));
+    if (error) throw dbError(error, 'Failed to read votes.');
+    return (data ?? []).map(mapVote);
   }
 
-  public castVote(
+  public async castVote(
     voterRaNumber: string,
     officeId: string,
     choice: 'candidate' | 'for' | 'against',
     candidateId?: string,
     ipAddress?: string
-  ): { vote: CastVote; isChange: boolean } {
-    const cleanRA = voterRaNumber.replace(/^RA-?/i, '').trim();
-    
-    // Check if voter already has a vote for this office
-    const existingIndex = this.data.votes.findIndex(
-      v => v.voterRaNumber.replace(/^RA-?/i, '').trim() === cleanRA && v.officeId === officeId
-    );
-
+  ): Promise<{ vote: CastVote; isChange: boolean }> {
+    const clean = cleanRA(voterRaNumber);
     const now = new Date().toISOString();
-    let isChange = false;
 
-    if (existingIndex >= 0) {
-      isChange = true;
-      this.data.votes[existingIndex] = {
-        ...this.data.votes[existingIndex],
-        choice,
-        candidateId,
-        timestamp: now,
-        ipAddress
-      };
-      this.saveData();
-      return { vote: this.data.votes[existingIndex], isChange };
-    } else {
-      const newVote: CastVote = {
-        id: `vote-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
-        voterRaNumber: cleanRA,
-        officeId,
-        choice,
-        candidateId,
-        timestamp: now,
-        ipAddress
-      };
-      this.data.votes.push(newVote);
-      this.saveData();
-      return { vote: newVote, isChange };
+    const { data: existing } = await this.supabase
+      .from('votes')
+      .select('*')
+      .eq('voter_ra_number', clean)
+      .eq('office_id', officeId)
+      .maybeSingle();
+
+    if (existing) {
+      const { data, error } = await this.supabase
+        .from('votes')
+        .update({ choice, candidate_id: candidateId ?? null, timestamp: now, ip_address: ipAddress ?? null })
+        .eq('id', existing.id)
+        .select()
+        .maybeSingle();
+      if (error) throw dbError(error, 'Failed to update vote.');
+      return { vote: mapVote(data), isChange: true };
     }
+
+    const row = {
+      id: `vote-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      voter_ra_number: clean,
+      office_id: officeId,
+      choice,
+      candidate_id: candidateId ?? null,
+      timestamp: now,
+      ip_address: ipAddress ?? null
+    };
+    const { error } = await this.supabase.from('votes').insert(row);
+    if (error) throw dbError(error, 'Failed to cast vote.');
+    return { vote: mapVote(row), isChange: false };
   }
 
-  public getCandidateVoters(candidateId: string): { voter: Voter; timestamp: string }[] {
-    const votes = this.data.votes.filter(
-      v => (v.candidateId === candidateId && v.choice === 'candidate') ||
-           (v.candidateId === candidateId && v.choice === 'for')
-    );
+  public async getCandidateVoters(candidateId: string): Promise<{ voter: Voter; timestamp: string }[]> {
+    const { data, error } = await this.supabase
+      .from('votes')
+      .select('*')
+      .eq('candidate_id', candidateId)
+      .in('choice', ['candidate', 'for']);
+    if (error) throw dbError(error, 'Failed to read candidate voters.');
     const result: { voter: Voter; timestamp: string }[] = [];
-    for (const v of votes) {
-      const voter = this.getVoterByRA(v.voterRaNumber);
-      if (voter) {
-        result.push({ voter, timestamp: v.timestamp });
-      }
+    for (const v of data ?? []) {
+      const voter = await this.getVoterByRA(v.voter_ra_number);
+      if (voter) result.push({ voter, timestamp: v.timestamp });
     }
     return result;
   }
 
-  public getLiveResults() {
-    const offices = this.getOffices();
-    const candidates = this.getCandidates();
-    const votes = this.getVotes();
+  public async getLiveResults() {
+    const offices = await this.getOffices();
+    const candidates = await this.getCandidates();
+    const votes = await this.getVotes();
 
     return offices.map(off => {
       const officeVotes = votes.filter(v => v.officeId === off.id);
@@ -888,8 +975,6 @@ export class Database {
   }
 
   // --- Passwords (RA number + password sign-in, fully self-contained) ---
-  // scrypt hashes; no external service involved. publicVoter() strips the
-  // hash at every API boundary so it never reaches a client.
   public hashPassword(password: string): string {
     const salt = crypto.randomBytes(16).toString('hex');
     const derived = crypto.scryptSync(password, salt, 64).toString('hex');
@@ -914,7 +999,7 @@ export class Database {
     }
   }
 
-  public setVoterPassword(id: string, password: string): Voter {
+  public async setVoterPassword(id: string, password: string): Promise<Voter> {
     if (!password || password.length < 6) {
       throw new Error('Password must be at least 6 characters.');
     }
@@ -926,94 +1011,42 @@ export class Database {
     return pub;
   }
 
-  // --- Authentication & Single Device Session Management ---
-  public createMagicLink(raNumber: string, email: string): MagicLinkRequest {
-    const token = crypto.randomBytes(32).toString('hex');
-    const cleanRA = raNumber.replace(/^RA-?/i, '').trim();
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString(); // 15 mins
+  // --- Single-device-exclusive sessions (7-day lifetime) ---
+  public async createExclusiveSession(voter: Voter, deviceInfo?: string): Promise<string> {
+    // SINGLE DEVICE ENFORCEMENT: invalidate any existing sessions for this RA.
+    await this.supabase.from('sessions').delete().eq('ra_number', voter.raNumber);
 
-    const magicLink: MagicLinkRequest = {
-      token,
-      raNumber: cleanRA,
-      email,
-      createdAt: new Date().toISOString(),
-      expiresAt,
-      used: false
-    };
-
-    this.data.magicLinks = this.data.magicLinks.filter(
-      m => new Date(m.expiresAt).getTime() > Date.now()
-    );
-    this.data.magicLinks.push(magicLink);
-    this.saveData();
-
-    return magicLink;
-  }
-
-  public verifyMagicLink(token: string, deviceInfo?: string): { voter: Voter; sessionToken: string } {
-    const link = this.data.magicLinks.find(m => m.token === token && !m.used);
-    if (!link) {
-      throw new Error('Invalid or expired authentication link.');
-    }
-
-    if (new Date(link.expiresAt).getTime() < Date.now()) {
-      throw new Error('This authentication link has expired.');
-    }
-
-    link.used = true;
-
-    const voter = this.getVoterByRA(link.raNumber);
-    if (!voter) {
-      throw new Error('Voter profile not found.');
-    }
-
-    const sessionToken = this.createExclusiveSession(voter, deviceInfo);
-    return { voter, sessionToken };
-  }
-
-  /**
-   * Creates a single-device-exclusive session for a voter, valid for 7 days.
-   * Any existing sessions for the voter's RA Number are invalidated first,
-   * so a login on a new device immediately logs out all other devices.
-   */
-  public createExclusiveSession(voter: Voter, deviceInfo?: string): string {
-    // SINGLE DEVICE ENFORCEMENT: Invalidate any existing sessions for this RA Number!
-    this.data.sessions = this.data.sessions.filter(
-      s => s.raNumber.replace(/^RA-?/i, '').trim() !== voter.raNumber.replace(/^RA-?/i, '').trim()
-    );
-
-    // Create new exclusive session token (7-day lifetime)
     const sessionToken = crypto.randomBytes(40).toString('hex');
-    const session: UserSession = {
+    const now = new Date();
+    const { error } = await this.supabase.from('sessions').insert({
       token: sessionToken,
-      raNumber: voter.raNumber,
-      userId: voter.id,
-      createdAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7 days
-      deviceInfo
-    };
-
-    this.data.sessions.push(session);
-    this.saveData();
-
+      ra_number: voter.raNumber,
+      user_id: voter.id,
+      device_info: deviceInfo ?? null,
+      created_at: now.toISOString(),
+      expires_at: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString()
+    });
+    if (error) throw dbError(error, 'Failed to create session.');
     return sessionToken;
   }
 
-  public getSession(sessionToken: string): UserSession | undefined {
-    const found = this.data.sessions.find(s => s.token === sessionToken);
-    if (!found) return undefined;
-    // Enforce the 7-day lifetime on read; lazily prune expired sessions.
-    if (new Date(found.expiresAt).getTime() < Date.now()) {
-      this.data.sessions = this.data.sessions.filter(s => s.token !== sessionToken);
-      this.saveData();
+  public async getSession(sessionToken: string): Promise<UserSession | undefined> {
+    const { data, error } = await this.supabase
+      .from('sessions')
+      .select('*')
+      .eq('token', sessionToken)
+      .maybeSingle();
+    if (error) throw dbError(error, 'Failed to read session.');
+    if (!data) return undefined;
+    if (new Date(data.expires_at).getTime() < Date.now()) {
+      await this.supabase.from('sessions').delete().eq('token', sessionToken);
       return undefined;
     }
-    return found;
+    return mapSession(data);
   }
 
-  public revokeSession(sessionToken: string) {
-    this.data.sessions = this.data.sessions.filter(s => s.token !== sessionToken);
-    this.saveData();
+  public async revokeSession(sessionToken: string): Promise<void> {
+    await this.supabase.from('sessions').delete().eq('token', sessionToken);
   }
 }
 
