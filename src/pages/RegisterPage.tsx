@@ -183,12 +183,12 @@ export const RegisterPage: React.FC<{ onNavigate: (page: string) => void }> = ({
 
             <button
               type="submit"
-              disabled={submitting || !settings?.registration_open}
+              disabled={submitting || !settings?.registrationOpen}
               className="w-full py-3.5 px-4 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-bold text-sm rounded-2xl shadow-lg shadow-emerald-500/25 transition-all flex items-center justify-center space-x-2 disabled:opacity-50"
             >
               <UserPlus className="w-4 h-4" />
               <span>
-                {submitting ? 'Registering...' : settings?.registration_open ? 'Register & Create Account' : 'Registration Closed'}
+                {submitting ? 'Registering...' : settings?.registrationOpen ? 'Register & Create Account' : 'Registration Closed'}
               </span>
             </button>
           </form>

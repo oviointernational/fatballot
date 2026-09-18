@@ -1,181 +1,255 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { Office, CandidateProfile, SiteSettings, CastVote, OfficeLiveResult, SystemStats } from '../types';
 import { supabase } from '../lib/supabase';
-import {
-  SiteSettings,
-  Office,
-  Candidate,
-  VoteRow,
-  VoteChoice,
-  VoteCountRow,
-  OfficeTotalRow,
-  VoterStats,
-  OfficeLiveResult
-} from '../types';
+import { mapCastVoteRow, mapOfficeRow, mapCandidateRow } from '../lib/mappers';
+import { fetchLiveResults, fetchSystemStats } from '../lib/liveResults';
 import { useAuth } from './AuthContext';
 
-interface CastVoteResult {
-  success: boolean;
-  message?: string;
-}
-
 interface ElectionContextType {
-  settings: SiteSettings | null;
+  settings: SiteSettings;
   offices: Office[];
-  candidates: Candidate[];
+  candidates: CandidateProfile[];
   liveResults: OfficeLiveResult[];
-  myVotes: VoteRow[];
-  stats: VoterStats | null;
+  myVotes: CastVote[];
+  stats: SystemStats | null;
   isLoading: boolean;
+  castVote: (officeId: string, choice: 'candidate' | 'for' | 'against', candidateId?: string) => Promise<{ success: boolean; isChange?: boolean; message?: string }>;
+  updateSettings: (newSettings: Partial<SiteSettings>) => Promise<boolean>;
+  refreshAll: () => Promise<void>;
   isElectionActive: boolean;
   hasElectionStarted: boolean;
   hasElectionEnded: boolean;
-  castVote: (officeId: string, choice: VoteChoice, candidateId: string) => Promise<CastVoteResult>;
-  updateSettings: (partial: Partial<SiteSettings>) => Promise<boolean>;
-  refreshAll: () => Promise<void>;
 }
+
+const defaultSettings: SiteSettings = {
+  siteName: "FatBallot",
+  aboutTitle: "Official 2026 Youth & Community Executive Elections",
+  aboutContent: "Welcome to FatBallot.",
+  aboutImageUrl: "",
+  electionStartTime: new Date().toISOString(),
+  electionEndTime: new Date(Date.now() + 86400000).toISOString(),
+  contestantsCanViewVoters: true,
+  publicAuditLog: false,
+  registrationOpen: true
+};
 
 const ElectionContext = createContext<ElectionContextType | undefined>(undefined);
 
+const mapSettings = (data: any): SiteSettings => ({
+  ...defaultSettings,
+  ...data,
+  permissions: data?.permissions
+});
+
+const mapCastVote = (row: any): CastVote => mapCastVoteRow(row);
+
 export const ElectionProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user } = useAuth();
-
-  const [settings, setSettings] = useState<SiteSettings | null>(null);
+  const { user, sessionToken } = useAuth();
+  const [settings, setSettings] = useState<SiteSettings>(defaultSettings);
   const [offices, setOffices] = useState<Office[]>([]);
-  const [candidates, setCandidates] = useState<Candidate[]>([]);
-  const [voteCounts, setVoteCounts] = useState<VoteCountRow[]>([]);
-  const [officeTotals, setOfficeTotals] = useState<OfficeTotalRow[]>([]);
-  const [myVotes, setMyVotes] = useState<VoteRow[]>([]);
-  const [stats, setStats] = useState<VoterStats | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [candidates, setCandidates] = useState<CandidateProfile[]>([]);
+  const [liveResults, setLiveResults] = useState<OfficeLiveResult[]>([]);
+  const [myVotes, setMyVotes] = useState<CastVote[]>([]);
+  const [stats, setStats] = useState<SystemStats | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  const loadPublicData = useCallback(async () => {
-    const [settingsQ, officesQ, candidatesQ, countsQ, totalsQ, statsQ] = await Promise.all([
-      supabase.from('settings').select('*').maybeSingle(),
-      supabase.from('offices').select('*').order('sort_order'),
-      supabase.from('candidates').select('*'),
-      supabase.from('vote_counts').select('*'),
-      supabase.from('office_totals').select('*'),
-      supabase.from('voter_stats').select('*').single()
-    ]);
-    if (!settingsQ.error && settingsQ.data) setSettings(settingsQ.data as SiteSettings);
-    if (!officesQ.error) setOffices((officesQ.data as Office[]) || []);
-    if (!candidatesQ.error) setCandidates((candidatesQ.data as Candidate[]) || []);
-    if (!countsQ.error) setVoteCounts((countsQ.data as VoteCountRow[]) || []);
-    if (!totalsQ.error) setOfficeTotals((totalsQ.data as OfficeTotalRow[]) || []);
-    if (!statsQ.error && statsQ.data) setStats(statsQ.data as VoterStats);
+  const fetchPublicData = useCallback(async () => {
+    try {
+      const [setRes, offRes, candRes] = await Promise.all([
+        supabase.from('settings').select('data').eq('id', 1).maybeSingle(),
+        supabase.from('offices').select('*').order('order'),
+        supabase.from('candidates').select('*')
+      ]);
+
+      if (setRes.data) setSettings(mapSettings(setRes.data.data));
+      if (offRes.data) setOffices(offRes.data.map(mapOfficeRow));
+      if (candRes.data) setCandidates(candRes.data.map(mapCandidateRow));
+      const s = await fetchSystemStats();
+      if (s) setStats(s);
+    } catch (err) {
+      console.error('Error fetching public election data:', err);
+    }
   }, []);
 
-  const loadMyVotes = useCallback(async () => {
-    if (!user) {
+  const fetchLive = useCallback(async () => {
+    try {
+      const results = await fetchLiveResults();
+      setLiveResults(results);
+    } catch (err) {
+      console.error('Live results refresh error', err);
+    }
+  }, []);
+
+  const fetchMyVotes = useCallback(async () => {
+    if (!user?.raNumber) {
       setMyVotes([]);
       return;
     }
-    const { data, error } = await supabase
-      .from('votes')
-      .select('*')
-      .eq('voter_id', user.id);
-    if (!error) setMyVotes((data as VoteRow[]) || []);
-  }, [user]);
-
-  const refreshAll = useCallback(async () => {
-    await Promise.all([loadPublicData(), loadMyVotes()]);
-  }, [loadPublicData, loadMyVotes]);
-
-  useEffect(() => {
-    loadPublicData().finally(() => setIsLoading(false));
-  }, [loadPublicData]);
+    try {
+      const { data, error } = await supabase
+        .from('votes')
+        .select('*')
+        .eq('voter_ra_number', parseInt(user.raNumber, 10))
+        .order('timestamp');
+      if (error) throw error;
+      setMyVotes((data || []).map(mapCastVote));
+    } catch (err) {
+      console.error('Error fetching user votes:', err);
+    }
+  }, [user?.raNumber]);
 
   useEffect(() => {
-    loadMyVotes();
-  }, [loadMyVotes]);
+    fetchPublicData();
+  }, [fetchPublicData]);
 
-  // Live results polling (Supabase is stateless on the client; poll the views).
+  useEffect(() => {
+    if (offices.length) fetchLive();
+  }, [offices, fetchLive]);
+
+  useEffect(() => {
+    fetchMyVotes();
+  }, [fetchMyVotes, user]);
+
+  // Live results polling
   useEffect(() => {
     let cancelled = false;
     let timer: any = null;
 
     const refresh = async () => {
-      const [countsQ, totalsQ, statsQ] = await Promise.all([
-        supabase.from('vote_counts').select('*'),
-        supabase.from('office_totals').select('*'),
-        supabase.from('voter_stats').select('*').single()
-      ]);
       if (cancelled) return;
-      if (!countsQ.error) setVoteCounts((countsQ.data as VoteCountRow[]) || []);
-      if (!totalsQ.error) setOfficeTotals((totalsQ.data as OfficeTotalRow[]) || []);
-      if (!statsQ.error && statsQ.data) setStats(statsQ.data as VoterStats);
-      timer = setTimeout(refresh, 4000);
+      try {
+        await fetchLive();
+      } catch (e) {
+        console.error('Live results refresh error', e);
+      }
+      if (!cancelled) timer = setTimeout(refresh, 4000);
     };
 
     refresh();
+
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, []);
+  }, [fetchLive]);
 
+  // Compute election status
   const now = new Date().getTime();
-  const startTime = settings?.election_start ? new Date(settings.election_start).getTime() : 0;
-  const endTime = settings?.election_end ? new Date(settings.election_end).getTime() : 0;
+  const startTime = new Date(settings.electionStartTime).getTime();
+  const endTime = new Date(settings.electionEndTime).getTime();
   const hasElectionStarted = now >= startTime;
   const hasElectionEnded = now > endTime;
   const isElectionActive = hasElectionStarted && !hasElectionEnded;
 
-  const liveResults: OfficeLiveResult[] = offices.map((office) => {
-    const rows = voteCounts.filter((v) => v.office_id === office.id);
-    const total = officeTotals.find((t) => t.office_id === office.id)?.total ?? 0;
+  const auditActor = () => {
+    if (!user) return {};
     return {
-      officeId: office.id,
-      officeTitle: office.title,
-      totalVotes: total,
-      isSingleCandidate: rows.length === 1,
-      candidates: rows.map((r) => ({
-        candidateId: r.candidate_id,
-        candidateName: r.candidate_name,
-        avatar: r.avatar,
-        tagline: r.tagline,
-        count: r.votes_for + r.votes_against,
-        forCount: r.votes_for,
-        againstCount: r.votes_against,
-        percentage: total > 0 ? Math.round(((r.votes_for + r.votes_against) / total) * 100) : 0
-      }))
+      id: user.id,
+      raNumber: user.raNumber,
+      name: user.name,
+      email: user.email,
+      role: user.role
     };
-  });
-
-  const castVote = async (officeId: string, choice: VoteChoice, candidateId: string): Promise<CastVoteResult> => {
-    if (!user) return { success: false, message: 'Please sign in to vote.' };
-    if (!settings?.voting_open) return { success: false, message: 'Voting is currently closed.' };
-
-    const { error } = await supabase
-      .from('votes')
-      .upsert(
-        {
-          voter_id: user.id,
-          office_id: officeId,
-          candidate_id: candidateId,
-          choice
-        },
-        { onConflict: 'voter_id,office_id' }
-      );
-
-    if (error) {
-      return { success: false, message: error.message || 'Failed to submit your ballot.' };
-    }
-    await Promise.all([loadMyVotes(), loadPublicData()]);
-    return { success: true };
   };
 
-  const updateSettings = async (partial: Partial<SiteSettings>): Promise<boolean> => {
-    const { error } = await supabase
-      .from('settings')
-      .update({ ...partial, updated_at: new Date().toISOString() })
-      .eq('id', 1);
-    if (error) {
-      console.error('settings update error', error.message);
+  // Cast vote with instant auto-save and state update
+  const castVote = async (
+    officeId: string,
+    choice: 'candidate' | 'for' | 'against',
+    candidateId?: string
+  ): Promise<{ success: boolean; isChange?: boolean; message?: string }> => {
+    if (!user) {
+      return { success: false, message: 'Please log in with your RA Number to cast your vote.' };
+    }
+
+    const previous = myVotes.find((v) => v.officeId === officeId);
+    const isChange = !!previous;
+
+    try {
+      let choiceValue = choice;
+      let candidateValue = candidateId || null;
+      // Referendum-style races use choice 'for'/'against' kept verbatim.
+      const { error } = await supabase
+        .from('votes')
+        .upsert(
+          {
+            voter_ra_number: parseInt(user.raNumber, 10),
+            office_id: officeId,
+            choice: choiceValue,
+            candidate_id: candidateValue,
+            timestamp: new Date().toISOString()
+          },
+          { onConflict: 'voter_ra_number,office_id' }
+        );
+
+      if (error) {
+        const msg = error.message || '';
+        if (msg.toLowerCase().includes('accredit')) {
+          return { success: false, message: 'Accreditation required to vote. Please see the electoral committee.' };
+        }
+        if (msg.toLowerCase().includes('row level security') || msg.toLowerCase().includes('permission')) {
+          return { success: false, message: `Your ballot could not be recorded (${msg}).` };
+        }
+        return { success: false, message: 'Failed to submit vote: ' + msg };
+      }
+
+      const row = { id: 'local', voter_ra_number: parseInt(user.raNumber, 10), office_id: officeId, choice, candidate_id: candidateValue, timestamp: new Date().toISOString() };
+      const mapped = mapCastVote(row);
+      setMyVotes((prev) => [...prev.filter((v) => v.officeId !== officeId), mapped]);
+
+      // Record the ballot in the audit ledger (event type VOTE_CAST or VOTE_CHANGED).
+      try {
+        await supabase.rpc('append_audit', {
+          p_event_type: isChange ? 'VOTE_CHANGED' : 'VOTE_CAST',
+          p_actor: auditActor(),
+          p_details: {
+            officeId,
+            choice,
+            candidateId: candidateValue,
+            previousChoice: previous?.choice,
+            previousCandidateId: previous?.candidateId
+          }
+        });
+      } catch (e) {
+        console.error('Audit append failed', e);
+      }
+
+      return { success: true, isChange };
+    } catch (err: any) {
+      return { success: false, message: err.message || 'Network error occurred.' };
+    }
+  };
+
+  const updateSettings = async (newSettings: Partial<SiteSettings>) => {
+    if (!sessionToken) return false;
+    try {
+      const { data: current } = await supabase.from('settings').select('data').eq('id', 1).maybeSingle();
+      const nextData = {
+        ...(current?.data || {}),
+        ...newSettings
+      };
+      const { error } = await supabase.from('settings').update({ data: nextData }).eq('id', 1);
+      if (error) return false;
+      setSettings(mapSettings(nextData));
+
+      try {
+        await supabase.rpc('append_audit', {
+          p_event_type: 'SETTINGS_UPDATED',
+          p_actor: auditActor(),
+          p_details: { changes: newSettings }
+        });
+      } catch (e) {
+        console.error('Audit append failed', e);
+      }
+      return true;
+    } catch (err) {
+      console.error('Failed to update settings:', err);
       return false;
     }
-    await loadPublicData();
-    return true;
+  };
+
+  const refreshAll = async () => {
+    await Promise.all([fetchPublicData(), fetchMyVotes()]);
   };
 
   return (
@@ -188,12 +262,12 @@ export const ElectionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         myVotes,
         stats,
         isLoading,
-        isElectionActive,
-        hasElectionStarted,
-        hasElectionEnded,
         castVote,
         updateSettings,
-        refreshAll
+        refreshAll,
+        isElectionActive,
+        hasElectionStarted,
+        hasElectionEnded
       }}
     >
       {children}

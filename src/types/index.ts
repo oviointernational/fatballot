@@ -1,108 +1,185 @@
-export type UserRole = 'member' | 'admin' | 'superadmin';
-export type ProfileStatus = 'active' | 'suspended';
-
-export interface Profile {
-  id: string;
-  ra_number: string;
-  email: string;
-  full_name: string;
-  phone: string;
-  department: string;
-  level: string;
-  role: UserRole;
-  status: ProfileStatus;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface RegistrationEntry {
-  id: string;
-  ra_number: string;
-  email: string;
-  full_name: string;
-  created_at: string;
-}
-
 export interface Office {
   id: string;
   title: string;
+  order: number;
   description: string;
   icon: string;
-  sort_order: number;
-  created_at: string;
 }
 
-export interface Candidate {
+export interface CandidateProfile {
   id: string;
-  office_id: string;
-  ra_number: string;
-  full_name: string;
+  officeId: string;
+  name: string;
+  raNumber: string;
   avatar: string;
   tagline: string;
-  statement: string;
-  created_at: string;
+  vision: string;
+  antecedent: string[];
+  currentOffices: string[];
+  achievements: string[];
+  contactEmail: string;
 }
 
-export type VoteChoice = 'candidate' | 'for' | 'against';
-
-export interface VoteRow {
+export interface Voter {
   id: string;
-  voter_id: string;
-  office_id: string;
-  candidate_id: string;
-  choice: VoteChoice;
-  created_at: string;
+  raNumber: string;
+  email: string;
+  firstName: string;
+  middleName?: string;
+  lastName: string;
+  name?: string;
+  role: 'voter' | 'contestant' | 'committee' | 'superadmin';
+  isAccredited: boolean;
+  isScreened?: boolean;
+  assignedOfficeId?: string;
+  isAgent?: boolean;
+  agentOfficeId?: string;
+  agentCandidateId?: string;
+  department?: string;
+  phone?: string;
+  avatar?: string;
+  registeredAt: string;
+}
+
+export interface ScreeningCriteria {
+  id: string;
+  officeId: string;
+  title: string;
+  criteria: string[];
+}
+
+export interface CandidateScreening {
+  candidateId: string;
+  officeId: string;
+  results: { criterion: string; passed: boolean }[];
+  passedCount: number;
+  totalCount: number;
+  percentage: number;
+  isScreened: boolean;
+  screenedAt: string;
+}
+
+export interface ElectionAgent {
+  id: string;
+  voterId: string;
+  voterRaNumber: string;
+  voterName: string;
+  officeId: string;
+  candidateId: string;
+  candidateName: string;
+  assignedAt: string;
+}
+
+export interface Observer {
+  id: string;
+  name: string;
+  rank: string;
+  office?: string;
+  phone: string;
+  token: string;
+  createdAt: string;
+  lastActiveDeviceId?: string;
+}
+
+export interface RolePermissions {
+  canRegisterUsers: string[];
+  canAccreditUsers: string[];
+  canCreateOffices: string[];
+  canAssignOffices: string[];
+  canCreateScreeningCriteria: string[];
+  canAssignAgents: string[];
+  canCreateObservers: string[];
+}
+
+export interface TimelineItem {
+  id: string;
+  order: number;
+  title: string;
+  description: string;
+  date: string;
+  status: 'completed' | 'active' | 'upcoming';
+  icon: string;
+}
+
+export interface YCECMember {
+  id: string;
+  name: string;
+  role: string;
+  email: string;
+  phone: string;
+  avatar: string;
+  tenure: string;
 }
 
 export interface SiteSettings {
+  siteName: string;
+  aboutTitle: string;
+  aboutContent: string;
+  aboutImageUrl: string;
+  electionStartTime: string;
+  electionEndTime: string;
+  contestantsCanViewVoters: boolean;
+  publicAuditLog: boolean;
+  registrationOpen?: boolean;
+  permissions?: RolePermissions;
+}
+
+export interface RegistrationEntry {
   id: number;
-  site_name: string;
-  about_title: string;
-  about_content: string;
-  about_image_url: string;
-  election_start: string;
-  election_end: string;
-  registration_open: boolean;
-  voting_open: boolean;
-  updated_at: string;
+  raNumber: string;
+  email: string;
+  fullName: string;
+  createdAt: string;
 }
 
-export interface VoteCountRow {
-  office_id: string;
-  candidate_id: string;
-  candidate_name: string;
+export interface CastVote {
+  id: string;
+  voterRaNumber: string;
+  officeId: string;
+  choice: 'candidate' | 'for' | 'against';
+  candidateId?: string;
+  timestamp: string;
+}
+
+export interface CandidateLiveResult {
+  candidateId: string;
+  candidateName: string;
   avatar: string;
-  tagline: string;
-  votes_for: number;
-  votes_against: number;
-}
-
-export interface OfficeTotalRow {
-  office_id: string;
-  total: number;
-}
-
-export interface VoterStats {
-  registered_voters: number;
-  active_voters: number;
-  offices_count: number;
-  candidates_count: number;
-  votes_count: number;
+  count: number;
+  percentage: number;
+  forCount: number;
+  againstCount: number;
 }
 
 export interface OfficeLiveResult {
   officeId: string;
   officeTitle: string;
   totalVotes: number;
+  candidates: CandidateLiveResult[];
   isSingleCandidate: boolean;
-  candidates: {
-    candidateId: string;
-    candidateName: string;
-    avatar: string;
-    tagline: string;
-    count: number;
-    forCount: number;
-    againstCount: number;
-    percentage: number;
-  }[];
+}
+
+export interface AuditBlock {
+  index: number;
+  timestamp: string;
+  eventType: string;
+  actor: {
+    id?: string;
+    raNumber?: string;
+    name?: string;
+    email?: string;
+    role?: string;
+  };
+  details: Record<string, any>;
+  previousHash: string;
+  hash: string;
+}
+
+export interface SystemStats {
+  officesCount: number;
+  registeredVotersCount: number;
+  accreditedVotersCount: number;
+  contestantsCount: number;
+  ycecCount: number;
+  totalVotesCount: number;
 }

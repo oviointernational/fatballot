@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
-import { Profile } from '../types';
+import { mapVoterRow } from '../lib/mappers';
+import { Voter } from '../types';
 
 interface AuthResult {
   success: boolean;
@@ -15,20 +16,30 @@ export interface RegisterInput {
 }
 
 interface AuthContextType {
-  user: Profile | null;
+  user: Voter | null;
+  /** Supabase access token (kept for interface compatibility). */
+  sessionToken: string | null;
   isLoading: boolean;
   isRecovery: boolean;
-  /** Sign in with the email + password that were used to register. */
-  login: (email: string, password: string) => Promise<AuthResult>;
-  /** Registers a voter IF their RA number + email match the committee's registration bank. */
+  supersededError: string | null;
+  setupRequired: boolean;
+  refreshSetupStatus: () => Promise<void>;
+  /** Sign in with an email address (or RA number, which is resolved). */
+  login: (identifier: string, password: string) => Promise<AuthResult>;
+  /** Register a voter whose RA + email are in the committee's registration bank. */
   register: (input: RegisterInput) => Promise<AuthResult>;
-  /** Supabase password-reset email (works for any registered account). */
+  /** Supabase password-reset email. */
   forgotPassword: (email: string) => Promise<AuthResult>;
-  /** Set a new password (used after a recovery link, or anytime while signed in). */
+  /** Set a new password (recovery link, or anytime while signed in). */
   updatePassword: (newPassword: string) => Promise<AuthResult>;
-  /** Update own contact details (RA, email, role stay locked by the database). */
-  updateProfile: (partial: Partial<Pick<Profile, 'full_name' | 'phone' | 'department' | 'level'>>) => Promise<AuthResult>;
+  /** Change password while signed in (current password is verified first). */
+  changePassword: (currentPassword: string, newPassword: string) => Promise<AuthResult>;
+  /** Update own public contact details. */
+  updateProfile: (partial: Partial<Pick<Voter, 'firstName' | 'lastName' | 'middleName' | 'phone' | 'department' | 'avatar'>>) => Promise<AuthResult>;
+  setupSuperadmin: (profile: { email: string; firstName: string; lastName: string; password: string }) => Promise<AuthResult>;
   logout: () => Promise<void>;
+  clearSupersededError: () => void;
+  quickLogin: (raNumber: string) => Promise<boolean>;
   refreshProfile: () => Promise<void>;
 }
 
@@ -36,81 +47,86 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const PENDING_KEY = 'fatballot_pending_registration';
 
-function pendingToInput(raw: string | null): { ra_number: string; email: string; full_name: string } | null {
-  if (!raw) return null;
-  try { return JSON.parse(raw); } catch { return null; }
-}
+const loadVoterByAuthId = async (authUid: string): Promise<Voter | null> => {
+  const { data, error } = await supabase
+    .from('voters')
+    .select('*')
+    .eq('auth_uid', authUid)
+    .maybeSingle();
+  if (error || !data || data.is_active === false) return null;
+  return mapVoterRow(data);
+};
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<Profile | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [user, setUser] = useState<Voter | null>(null);
+  const [sessionToken, setSessionToken] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isRecovery, setIsRecovery] = useState(false);
+  const [supersededError, setSupersededError] = useState<string | null>(null);
+  const [setupRequired, setSetupRequired] = useState<boolean>(false);
 
-  const loadProfile = useCallback(async (userId: string) => {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .maybeSingle();
-    if (error) {
-      console.error('profile load error', error.message);
-      return null;
-    }
-    return data as Profile | null;
+  const refreshSetupStatus = useCallback(async () => {
+    setSetupRequired(false);
   }, []);
 
   const refreshProfile = useCallback(async () => {
     const { data: { session } } = await supabase.auth.getSession();
     if (session?.user) {
-      const profile = await loadProfile(session.user.id);
-      setUser(profile ?? null);
+      const profile = await loadVoterByAuthId(session.user.id);
+      setUser(profile);
+      setSessionToken(session.access_token);
     } else {
       setUser(null);
+      setSessionToken(null);
     }
-  }, [loadProfile]);
+  }, []);
 
-  /** Finishes a sign-up whose profile insert was deferred (email-confirm link clicked). */
-  const completeRegistration = useCallback(async (): Promise<{ error?: string; data?: Profile }> => {
-    const pending = pendingToInput(localStorage.getItem(PENDING_KEY));
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!pending || !user) return {};
-    const { data, error } = await supabase
-      .from('profiles')
-      .insert({
-        id: user.id,
-        ra_number: pending.ra_number,
-        email: pending.email.toLowerCase(),
-        full_name: pending.full_name
-      })
-      .select('*')
-      .single();
-    if (error) return { error: error.message };
+  /** Finishes a sign-up whose voter insert was deferred (email-confirm link). */
+  const completeRegistration = useCallback(async (): Promise<AuthResult> => {
+    const raw = localStorage.getItem(PENDING_KEY);
+    if (!raw) return { success: false, message: 'No pending registration.' };
+    let pending: RegisterInput;
+    try { pending = JSON.parse(raw); } catch { return { success: false, message: 'Pending registration is corrupt.' }; }
+    const cleanRA = pending.ra_number.replace(/^RA-?/i, '').trim();
+    const email = pending.email.trim().toLowerCase();
+    const parts = pending.full_name.trim().split(/\s+/);
+    const firstName = parts[0] || '';
+    const lastName = parts.slice(1).join(' ') || firstName;
+
+    const { data: { user: authUser } } = await supabase.auth.getUser();
+    if (!authUser) return { success: false, message: 'Not signed in.' };
+
+    const { error } = await supabase.from('voters').insert({
+      id: authUser.id,
+      auth_uid: authUser.id,
+      ra_number: parseInt(cleanRA, 10),
+      email,
+      first_name: firstName,
+      last_name: lastName,
+      role: 'voter',
+      registered_at: new Date().toISOString()
+    });
+    if (error) return { success: false, message: 'Registration was not accepted: ' + error.message };
     localStorage.removeItem(PENDING_KEY);
-    setUser(data as Profile);
-    return { data: data as Profile };
+    const profile = await loadVoterByAuthId(authUser.id);
+    setUser(profile);
+    return { success: true, message: 'Registered successfully.' };
   }, []);
 
   const syncFromSession = useCallback(async (session: any) => {
     if (!session?.user) return;
-    let profile = await loadProfile(session.user.id);
+    const profile = await loadVoterByAuthId(session.user.id);
     if (!profile) {
       const completed = await completeRegistration();
-      if (completed.data) return;
-      if (completed.error) {
-        // Likely a bank mismatch: the account exists but has no voter record.
-        // Keep them signed out so the register/login pages can explain it.
-        await supabase.auth.signOut();
-        setUser(null);
-        return;
-      }
-      // A signed-in auth user with no profile and no pending registration:
-      // treat as not a registered voter.
+      if (completed.success) return;
+      // A signed-in auth user with no voter record and nothing pending.
       await supabase.auth.signOut();
       setUser(null);
       return;
     }
     setUser(profile);
-  }, [loadProfile, completeRegistration]);
+    setSessionToken(session.access_token);
+  }, [completeRegistration]);
 
   useEffect(() => {
     let cancelled = false;
@@ -124,10 +140,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     })();
 
     const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_IN') {
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
         syncFromSession(session);
       } else if (event === 'SIGNED_OUT') {
         setUser(null);
+        setSessionToken(null);
         setIsRecovery(false);
       } else if (event === 'PASSWORD_RECOVERY') {
         setIsRecovery(true);
@@ -140,39 +157,50 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [syncFromSession]);
 
-  const login = async (email: string, password: string): Promise<AuthResult> => {
-    if (!email.trim() || !password) {
-      return { success: false, message: 'Please enter your email and password.' };
+  const login = async (identifier: string, password: string): Promise<AuthResult> => {
+    const clean = identifier.trim();
+    if (!clean || !password) {
+      return { success: false, message: 'Please enter your email/RA number and password.' };
     }
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: email.trim().toLowerCase(),
-      password
-    });
-    if (error) {
-      if (error.message.toLowerCase().includes('invalid login')) {
-        return { success: false, message: 'Incorrect email or password.' };
+    try {
+      let email = clean;
+      if (!clean.includes('@')) {
+        const ra = parseInt(clean.replace(/^RA-?/i, ''), 10);
+        if (isNaN(ra)) return { success: false, message: 'Enter a valid RA number or email.' };
+        const { data: resolved, error: rpcErr } = await supabase.rpc('lookup_email_for_ra', { p_ra_number: ra });
+        if (rpcErr || !resolved) return { success: false, message: 'No account matches that RA number.' };
+        email = resolved;
       }
-      if (error.message.toLowerCase().includes('email not confirmed')) {
-        return { success: false, message: 'Please confirm your email before signing in.' };
+
+      const { data, error } = await supabase.auth.signInWithPassword({ email: email.toLowerCase(), password });
+      if (error) {
+        const msg = (error.message || '').toLowerCase();
+        if (msg.includes('invalid login') || msg.includes('invalid email') || msg.includes('invalid password')) {
+          return { success: false, message: 'Incorrect email or password.' };
+        }
+        if (msg.includes('not confirmed')) {
+          return { success: false, message: 'Please confirm your email before signing in.' };
+        }
+        return { success: false, message: error.message };
       }
-      return { success: false, message: error.message };
+      const profile = await loadVoterByAuthId(data.user.id);
+      if (!profile) {
+        await supabase.auth.signOut();
+        return { success: false, message: 'Your account has no voter record yet. Please register with your RA number.' };
+      }
+      setUser(profile);
+      setSessionToken(data.session.access_token);
+      return { success: true, message: 'Signed in successfully.' };
+    } catch (err: any) {
+      return { success: false, message: err.message || 'Network error occurred.' };
     }
-    // Rely on SIGNED_IN for the profile push, but verify here too,
-    // because React state updates are asynchronous.
-    await syncFromSession(data.session);
-    const { data: sessionData } = await supabase.auth.getSession();
-    if (sessionData.session) {
-      const profile = await loadProfile(sessionData.session.user.id);
-      if (profile) return { success: true, message: 'Signed in successfully.' };
-    }
-    return { success: false, message: 'Your account has no voter record yet. Please register with your RA number.' };
   };
 
   const register = async (input: RegisterInput): Promise<AuthResult> => {
-    const ra = input.ra_number.trim();
+    const cleanRA = input.ra_number.replace(/^RA-?/i, '').trim();
     const email = input.email.trim().toLowerCase();
     const fullName = input.full_name.trim();
-    if (!ra || !email || !fullName || !input.password) {
+    if (!cleanRA || !email || !fullName || !input.password) {
       return { success: false, message: 'Please complete every field.' };
     }
     if (input.password.length < 6) {
@@ -181,24 +209,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const { data, error } = await supabase.auth.signUp({ email, password: input.password });
     if (error) {
-      if (error.message.toLowerCase().includes('already registered') || error.message.toLowerCase().includes('already been registered')) {
+      if ((error.message || '').toLowerCase().includes('already registered')) {
         return { success: false, message: 'That email is already registered. Please sign in instead.' };
       }
       return { success: false, message: error.message };
     }
 
-    // Stage the profile details so they can be replayed after email confirmation.
-    localStorage.setItem(PENDING_KEY, JSON.stringify({ ra_number: ra, email, full_name: fullName }));
+    localStorage.setItem(PENDING_KEY, JSON.stringify({ ra_number: cleanRA, email, full_name: fullName, password: input.password }));
 
     if (data.session?.user) {
       const completed = await completeRegistration();
-      if (completed.error) {
-        return {
-          success: false,
-          message: 'Registration was not accepted: ' + completed.error
-        };
+      if (!completed.success) {
+        return { success: false, message: completed.message };
       }
-      return { success: true, message: `Welcome, ${fullName}. You are registered and signed in.` };
+      const profile = await loadVoterByAuthId(data.session.user.id);
+      if (profile) setUser(profile);
+      return { success: true, message: `Welcome, ${profile?.name || fullName}. You are registered and signed in.` };
     }
 
     return {
@@ -214,9 +240,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
       redirectTo: `${window.location.origin}/update-password`
     });
-    if (error) {
-      return { success: false, message: error.message };
-    }
+    if (error) return { success: false, message: error.message };
     return { success: true, message: 'If an account exists with that email, a password-reset link is on its way.' };
   };
 
@@ -230,35 +254,84 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: true, message: 'Password updated successfully.' };
   };
 
-  const updateProfile = async (partial: Partial<Pick<Profile, 'full_name' | 'phone' | 'department' | 'level'>>): Promise<AuthResult> => {
+  const changePassword = async (currentPassword: string, newPassword: string): Promise<AuthResult> => {
+    if (!currentPassword || !newPassword) {
+      return { success: false, message: 'Please fill in both password fields.' };
+    }
+    if (newPassword.length < 6) {
+      return { success: false, message: 'New password must be at least 6 characters.' };
+    }
+    if (!user?.email) return { success: false, message: 'You need to be signed in.' };
+    try {
+      const { error: verifyError } = await supabase.auth.signInWithPassword({ email: user.email, password: currentPassword });
+      if (verifyError) return { success: false, message: 'Your current password is incorrect.' };
+      const { error } = await supabase.auth.updateUser({ password: newPassword });
+      if (error) return { success: false, message: error.message };
+      return { success: true, message: 'Password changed successfully.' };
+    } catch (err: any) {
+      return { success: false, message: err.message || 'Could not change password.' };
+    }
+  };
+
+  const updateProfile = async (partial: Partial<Pick<Voter, 'firstName' | 'lastName' | 'middleName' | 'phone' | 'department' | 'avatar'>>): Promise<AuthResult> => {
     if (!user) return { success: false, message: 'You need to be signed in.' };
+    const { data: { user: authUser } } = await supabase.auth.getUser();
+    if (!authUser) return { success: false, message: 'You need to be signed in.' };
     const { error } = await supabase
-      .from('profiles')
-      .update({ ...partial, updated_at: new Date().toISOString() })
-      .eq('id', user.id);
+      .from('voters')
+      .update({
+        first_name: partial.firstName,
+        last_name: partial.lastName,
+        middle_name: partial.middleName,
+        phone: partial.phone,
+        department: partial.department,
+        avatar: partial.avatar
+      })
+      .eq('auth_uid', authUser.id);
     if (error) return { success: false, message: error.message };
-    await refreshProfile();
+    const profile = await loadVoterByAuthId(authUser.id);
+    if (profile) setUser(profile);
     return { success: true, message: 'Profile updated successfully.' };
+  };
+
+  const setupSuperadmin = async (): Promise<AuthResult> => {
+    return { success: false, message: 'The Superadmin account is already provisioned. Please sign in with the seeded credentials.' };
   };
 
   const logout = async () => {
     await supabase.auth.signOut();
     setUser(null);
+    setSessionToken(null);
     setIsRecovery(false);
+  };
+
+  const clearSupersededError: () => void = () => setSupersededError(null);
+
+  const quickLogin = async (raNumber: string): Promise<boolean> => {
+    alert('Quick login requires the application server. Please sign in with your email and password instead.');
+    return false;
   };
 
   return (
     <AuthContext.Provider
       value={{
         user,
+        sessionToken,
         isLoading,
         isRecovery,
+        supersededError,
+        setupRequired,
+        refreshSetupStatus,
         login,
         register,
         forgotPassword,
         updatePassword,
+        changePassword,
         updateProfile,
+        setupSuperadmin,
         logout,
+        clearSupersededError,
+        quickLogin,
         refreshProfile
       }}
     >
