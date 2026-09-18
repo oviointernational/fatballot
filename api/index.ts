@@ -77,15 +77,15 @@ async function handler(req: any, res: any) {
 
 export default handler;
 
-// Pinned serverless runtime: guarantees a supported Node.js version even if
-// the project default is older/retired (a retired runtime fails every
-// invocation before application code runs).
-export const config = { runtime: 'nodejs20.x' };
+// Pinned serverless runtime: plain Node.js function (Vercel only accepts
+// "edge" | "experimental-edge" | "nodejs" here — a versioned value like
+// "nodejs20.x" fails the build).
+export const config = { runtime: 'nodejs' };
 
 // CJS/ESM interop for the serverless launcher (see server/handler.ts).
 declare const module: any;
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = handler;
   module.exports.default = handler;
-  module.exports.config = { runtime: 'nodejs20.x' };
+  module.exports.config = { runtime: 'nodejs' };
 }
