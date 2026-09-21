@@ -61,6 +61,14 @@ begin
 end;
 $$;
 
+-- Access-control flag: may a registered-but-unaccredited voter cast a ballot?
+create or replace function public.allows_unaccredited_voting()
+returns boolean language sql stable security definer set search_path = public as
+$$
+  select coalesce((data->>'allowUnaccreditedVoting')::boolean, false)
+  from public.settings where id = 1;
+$$;
+
 -- --------------------------------------------------------------------------
 -- IDENTITY GUARD (RLS alone cannot compare old row to proposed row)
 -- The trigger is attached to public.voters AFTER the table is created below.
@@ -106,6 +114,7 @@ insert into public.settings (id, data) values (1, '{
   "contestantsCanViewVoters": true,
   "publicAuditLog": false,
   "registrationOpen": true,
+  "allowUnaccreditedVoting": false,
   "permissions": {
     "canRegisterUsers": ["superadmin", "committee"],
     "canAccreditUsers": ["superadmin", "committee"],
@@ -126,6 +135,11 @@ where id = 1 and not (data ? 'electionStartTime');
 update public.settings
 set data = jsonb_set(data, '{electionEndTime}', to_jsonb((now() + interval '72 hours')::text), true)
 where id = 1 and not (data ? 'electionEndTime');
+
+-- Backfill for databases created before this flag existed.
+update public.settings
+set data = data || '{"allowUnaccreditedVoting": false}'::jsonb
+where id = 1 and not (data ? 'allowUnaccreditedVoting');
 
 -- --------------------------------------------------------------------------
 -- REGISTRATION BANK (committee may add eligible voters; the row is consumed
@@ -565,7 +579,9 @@ create policy votes_select_own on public.votes for select to authenticated
 drop policy if exists votes_insert_self on public.votes;
 create policy votes_insert_self on public.votes for insert to authenticated with check (
   exists (select 1 from public.voters v
-          where v.auth_uid = auth.uid() and v.ra_number = voter_ra_number and v.is_accredited and coalesce(v.is_active, true))
+          where v.auth_uid = auth.uid() and v.ra_number = voter_ra_number
+            and (v.is_accredited or public.allows_unaccredited_voting())
+            and coalesce(v.is_active, true))
   and exists (select 1 from public.offices o where o.id = office_id)
   and (choice = 'for' or choice = 'against' or (choice = 'candidate'
        and exists (select 1 from public.candidates c where c.id = candidate_id and c.office_id = office_id)))
@@ -576,7 +592,9 @@ create policy votes_update_self on public.votes for update to authenticated
          or is_admin())
   with check (
     exists (select 1 from public.voters v
-            where v.auth_uid = auth.uid() and v.ra_number = voter_ra_number and v.is_accredited and coalesce(v.is_active, true))
+            where v.auth_uid = auth.uid() and v.ra_number = voter_ra_number
+              and (v.is_accredited or public.allows_unaccredited_voting())
+              and coalesce(v.is_active, true))
     and exists (select 1 from public.offices o where o.id = office_id)
     and (choice = 'for' or choice = 'against' or (choice = 'candidate'
          and exists (select 1 from public.candidates c where c.id = candidate_id and c.office_id = office_id)))
@@ -671,6 +689,7 @@ grant execute on function public.append_audit(text, jsonb, jsonb) to authenticat
 grant execute on function public.verify_audit_chain() to authenticated;
 grant execute on function public.verify_observer(text) to anon, authenticated;
 grant execute on function public.lookup_email_for_ra(integer) to anon, authenticated;
+grant execute on function public.allows_unaccredited_voting() to anon, authenticated;
 grant execute on function public.voters_for_candidate(text) to authenticated;
 revoke insert, update, delete on public.audit_log from anon, authenticated;
 

@@ -121,6 +121,8 @@ export interface SiteSettings {
   contestantsCanViewVoters: boolean;
   publicAuditLog: boolean;
   registrationOpen?: boolean;
+  /** If true, even non-accredited voters may cast a ballot. */
+  allowUnaccreditedVoting?: boolean;
   /** 'none' = no election configured at all (no timer, no results). Omitted = time-driven. */
   electionMode?: 'none';
   permissions?: RolePermissions;

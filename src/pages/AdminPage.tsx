@@ -135,6 +135,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
   const [endTime, setEndTime] = useState(settings.electionEndTime.slice(0, 16));
   const [contestantsCanViewVoters, setContestantsCanViewVoters] = useState(settings.contestantsCanViewVoters);
   const [publicAuditLog, setPublicAuditLog] = useState(settings.publicAuditLog);
+  const [allowUnaccreditedVoting, setAllowUnaccreditedVoting] = useState(settings.allowUnaccreditedVoting ?? false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [settingsFeedback, setSettingsFeedback] = useState<string | null>(null);
 
@@ -1021,6 +1022,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
       electionEndTime: new Date(endTime).toISOString(),
       contestantsCanViewVoters,
       publicAuditLog,
+      allowUnaccreditedVoting,
       permissions
     });
     setSavingSettings(false);
@@ -1619,6 +1621,20 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                     disabled={!isSuperadmin}
                     checked={contestantsCanViewVoters}
                     onChange={(e) => setContestantsCanViewVoters(e.target.checked)}
+                    className="w-5 h-5 accent-purple-600 rounded cursor-pointer"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between pt-2 border-t border-gray-200 dark:border-[#1E2E4E]">
+                  <div>
+                    <div className="font-semibold text-gray-900 dark:text-white">Allow Non-Accredited Voters to Vote</div>
+                    <p className="text-gray-500 text-[11px]">Permits registered constituents to cast a ballot without prior accreditation.</p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    disabled={!isSuperadmin}
+                    checked={allowUnaccreditedVoting}
+                    onChange={(e) => setAllowUnaccreditedVoting(e.target.checked)}
                     className="w-5 h-5 accent-purple-600 rounded cursor-pointer"
                   />
                 </div>

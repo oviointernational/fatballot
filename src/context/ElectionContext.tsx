@@ -31,7 +31,8 @@ const defaultSettings: SiteSettings = {
   electionEndTime: new Date(Date.now() + 86400000).toISOString(),
   contestantsCanViewVoters: true,
   publicAuditLog: false,
-  registrationOpen: true
+  registrationOpen: true,
+  allowUnaccreditedVoting: false
 };
 
 const ElectionContext = createContext<ElectionContextType | undefined>(undefined);
