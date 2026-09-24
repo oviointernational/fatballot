@@ -39,7 +39,7 @@ create or replace function public.is_admin()
 returns boolean language plpgsql stable security definer set search_path = public as
 $$
 begin
-  return exists (select 1 from public.voters where auth_uid = auth.uid() and role in ('committee', 'superadmin') and coalesce(is_active, true));
+  return exists (select 1 from public.voters where auth_uid::text = auth.uid()::text and role in ('committee', 'superadmin') and coalesce(is_active, true));
 end;
 $$;
 
@@ -47,7 +47,7 @@ create or replace function public.is_superadmin()
 returns boolean language plpgsql stable security definer set search_path = public as
 $$
 begin
-  return exists (select 1 from public.voters where auth_uid = auth.uid() and role = 'superadmin' and coalesce(is_active, true));
+  return exists (select 1 from public.voters where auth_uid::text = auth.uid()::text and role = 'superadmin' and coalesce(is_active, true));
 end;
 $$;
 
@@ -102,7 +102,7 @@ begin
   if char_length(coalesce(p_password, '')) < 6 then
     raise exception 'Initial password must be at least 6 characters.';
   end if;
-  if exists (select 1 from public.voters where ra_number = p_ra_number) then
+  if exists (select 1 from public.voters where ra_number::text = p_ra_number::text) then
     raise exception 'That RA number already belongs to a registered voter.';
   end if;
   if exists (select 1 from public.voters where lower(email) = v_norm_email) then
@@ -194,7 +194,7 @@ begin
   end if;
 
   select auth_uid, role into v_auth_uid, v_role
-  from public.voters where id = p_voter_id;
+  from public.voters where id::text = p_voter_id;
   if not found then
     raise exception 'No voter record matches that user.';
   end if;
@@ -514,6 +514,56 @@ $$ select id, name, rank, office from public.observers
    where token = p_token and is_active
    limit 1 $$;
 
+-- Normalize legacy column types left over from earlier schema-era variants
+-- (e.g. uuid primary keys, text/varchar RA numbers, varchar auth_uid). These
+-- drift-safe guards make every comparison below type-correct — fixing errors
+-- like "operator does not exist: character varying = uuid" on re-run of this
+-- file over an older database. Each block is skipped (with a notice) if the
+-- column is already correct or the data can't be cast cleanly.
+do $$
+begin
+  if exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'voters'
+               and column_name = 'auth_uid' and data_type = 'character varying') then
+    begin
+      drop view if exists public.my_audit;
+      alter table public.voters alter column auth_uid type uuid using auth_uid::uuid;
+    exception when others then
+      raise notice 'Skipped voters.auth_uid normalization: %', sqlerrm;
+    end;
+  end if;
+
+  if exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'voters'
+               and column_name = 'ra_number' and data_type in ('character varying', 'text')) then
+    begin
+      alter table public.voters alter column ra_number type integer using ra_number::integer;
+    exception when others then
+      raise notice 'Skipped voters.ra_number normalization: %', sqlerrm;
+    end;
+  end if;
+
+  if exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'registration_bank'
+               and column_name = 'ra_number' and data_type in ('character varying', 'text')) then
+    begin
+      alter table public.registration_bank alter column ra_number type integer using ra_number::integer;
+    exception when others then
+      raise notice 'Skipped registration_bank.ra_number normalization: %', sqlerrm;
+    end;
+  end if;
+
+  if exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'votes'
+               and column_name = 'voter_ra_number' and data_type in ('character varying', 'text')) then
+    begin
+      alter table public.votes alter column voter_ra_number type integer using voter_ra_number::integer;
+    exception when others then
+      raise notice 'Skipped votes.voter_ra_number normalization: %', sqlerrm;
+    end;
+  end if;
+end $$;
+
 -- --------------------------------------------------------------------------
 -- AUDIT LOG (append-only; the chain is built INSIDE append_audit so clients
 -- cannot forge a block or race the ordering)
@@ -581,7 +631,7 @@ create or replace view public.my_audit as
   with me as (
     select id, ra_number::text as ra
     from public.voters
-    where auth_uid = auth.uid()
+    where auth_uid::text = auth.uid()::text
   )
   select al.*
   from public.audit_log al, me
@@ -601,7 +651,7 @@ $$
   with me as (
     select id, ra_number::text as ra
     from public.voters
-    where auth_uid = auth.uid()
+    where auth_uid::text = auth.uid()::text
   )
   select al.*
   from public.audit_log al, me
@@ -629,7 +679,7 @@ where vt.candidate_id = p_candidate_id
   and exists (
     select 1 from public.voters me
     join public.candidates mc on mc.voter_id = me.id
-    where me.auth_uid = auth.uid() and mc.id = p_candidate_id
+    where me.auth_uid::text = auth.uid()::text and mc.id = p_candidate_id
   )
 order by v.ra_number
 $$;
@@ -688,7 +738,7 @@ drop policy if exists voters_select_all on public.voters;
 create policy voters_select_all on public.voters for select to authenticated using (coalesce(is_active, true));
 drop policy if exists voters_insert_self on public.voters;
 create policy voters_insert_self on public.voters for insert to authenticated with check (
-  auth_uid = auth.uid()
+  auth_uid::text = auth.uid()::text
   and role = 'voter'
   and is_accredited = false
   and is_active = true
@@ -698,8 +748,8 @@ create policy voters_insert_self on public.voters for insert to authenticated wi
 );
 drop policy if exists voters_update_self on public.voters;
 create policy voters_update_self on public.voters for update to authenticated
-  using (auth_uid = auth.uid())
-  with check (auth_uid = auth.uid());
+  using (auth_uid::text = auth.uid()::text)
+  with check (auth_uid::text = auth.uid()::text);
 drop policy if exists voters_update_admin on public.voters;
 create policy voters_update_admin on public.voters for update to authenticated
   using (is_admin() and (role <> 'superadmin' or is_superadmin()))
@@ -741,7 +791,7 @@ drop policy if exists candidates_insert_self on public.candidates;
 create policy candidates_insert_self on public.candidates for insert to authenticated with check (
   exists (select 1 from public.voters v
           where v.id = voter_id
-            and v.auth_uid = auth.uid()
+            and v.auth_uid::text = auth.uid()::text
             and v.role = 'contestant'
             and v.assigned_office_id = office_id)
 );
@@ -755,12 +805,12 @@ create policy candidates_delete_admin on public.candidates for delete to authent
 -- VOTES (own ballot; committee may inspect for audits; accredited gate in DB)
 drop policy if exists votes_select_own on public.votes;
 create policy votes_select_own on public.votes for select to authenticated
-  using (exists (select 1 from public.voters v where v.auth_uid = auth.uid() and v.ra_number = voter_ra_number)
+  using (exists (select 1 from public.voters v where v.auth_uid::text = auth.uid()::text and v.ra_number::text = voter_ra_number::text)
          or is_admin());
 drop policy if exists votes_insert_self on public.votes;
 create policy votes_insert_self on public.votes for insert to authenticated with check (
   exists (select 1 from public.voters v
-          where v.auth_uid = auth.uid() and v.ra_number = voter_ra_number
+          where v.auth_uid::text = auth.uid()::text and v.ra_number::text = voter_ra_number::text
             and (v.is_accredited or public.allows_unaccredited_voting())
             and coalesce(v.is_active, true))
   and exists (select 1 from public.offices o where o.id = office_id)
@@ -769,11 +819,11 @@ create policy votes_insert_self on public.votes for insert to authenticated with
 );
 drop policy if exists votes_update_self on public.votes;
 create policy votes_update_self on public.votes for update to authenticated
-  using (exists (select 1 from public.voters v where v.auth_uid = auth.uid() and v.ra_number = voter_ra_number)
+  using (exists (select 1 from public.voters v where v.auth_uid::text = auth.uid()::text and v.ra_number::text = voter_ra_number::text)
          or is_admin())
   with check (
     exists (select 1 from public.voters v
-            where v.auth_uid = auth.uid() and v.ra_number = voter_ra_number
+            where v.auth_uid::text = auth.uid()::text and v.ra_number::text = voter_ra_number::text
               and (v.is_accredited or public.allows_unaccredited_voting())
               and coalesce(v.is_active, true))
     and exists (select 1 from public.offices o where o.id = office_id)
@@ -847,7 +897,7 @@ drop policy if exists audit_select_admin on public.audit_log;
 create policy audit_select_admin on public.audit_log for select to authenticated using (is_admin());
 drop policy if exists audit_select_own on public.audit_log;
 create policy audit_select_own on public.audit_log for select to authenticated
-  using (actor->>'raNumber' = (select ra_number::text from public.voters where auth_uid = auth.uid()));
+  using (actor->>'raNumber' = (select ra_number::text from public.voters where auth_uid::text = auth.uid()::text));
 -- When the committee enables the public audit log, every signed-in member may read the full chain.
 drop policy if exists audit_select_public on public.audit_log;
 create policy audit_select_public on public.audit_log for select to authenticated
@@ -857,8 +907,8 @@ drop policy if exists audit_select_agent on public.audit_log;
 create policy audit_select_agent on public.audit_log for select to authenticated
   using (exists (
     select 1 from public.agents a
-    join public.voters v on v.ra_number = a.voter_ra_number
-    where v.auth_uid = auth.uid() and v.is_agent and a.candidate_id = details->>'candidateId'
+    join public.voters v on v.ra_number::text = a.voter_ra_number::text
+    where v.auth_uid::text = auth.uid()::text and v.is_agent and a.candidate_id = details->>'candidateId'
   ));
 
 -- --------------------------------------------------------------------------
