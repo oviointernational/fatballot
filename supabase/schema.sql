@@ -84,7 +84,7 @@ create or replace function public.admin_provision_user(
   p_department text default '',
   p_phone text default ''
 )
-returns jsonb language plpgsql security definer set search_path = public as
+returns jsonb language plpgsql security definer set search_path = public, extensions as
 $$
 declare
   v_auth_id uuid;
@@ -102,35 +102,53 @@ begin
   if char_length(coalesce(p_password, '')) < 6 then
     raise exception 'Initial password must be at least 6 characters.';
   end if;
-  if exists (select 1 from public.voters where lower(email) = v_norm_email or ra_number = p_ra_number) then
-    raise exception 'That RA number or email already belongs to a registered voter.';
+  if exists (select 1 from public.voters where ra_number = p_ra_number) then
+    raise exception 'That RA number already belongs to a registered voter.';
   end if;
-  if exists (select 1 from auth.users where lower(email) = v_norm_email) then
-    raise exception 'An account already exists for that email address.';
+  if exists (select 1 from public.voters where lower(email) = v_norm_email) then
+    raise exception 'An account for that email is already fully registered.';
+  end if;
+
+  -- Reuse an orphaned auth account (an email present in auth.users but with no
+  -- voter record yet, e.g. an interrupted earlier enrolment) so admin
+  -- registration is idempotent instead of failing with "already exists".
+  select id into v_auth_id from auth.users where lower(email) = v_norm_email limit 1;
+
+  if v_auth_id is null then
+    insert into auth.users (
+      instance_id, id, aud, role, email,
+      encrypted_password, email_confirmed_at,
+      raw_app_meta_data, raw_user_meta_data,
+      created_at, updated_at,
+      confirmation_token, recovery_token,
+      email_change, email_change_token_new, email_change_token_current
+    ) values (
+      '00000000-0000-0000-0000-000000000000',
+      gen_random_uuid(),
+      'authenticated', 'authenticated',
+      v_norm_email,
+      crypt(p_password, gen_salt('bf')),
+      now(),
+      '{"provider":"email","providers":["email"]}',
+      '{}',
+      now(), now(), '', '', '', '', ''
+    )
+    returning id into v_auth_id;
+  else
+    update auth.users
+    set encrypted_password = crypt(p_password, gen_salt('bf')),
+        email_confirmed_at = coalesce(email_confirmed_at, now()),
+        recovery_token = '',
+        confirmation_token = '',
+        email_change_token_new = '',
+        email_change_token_current = '',
+        updated_at = now()
+    where id = v_auth_id;
+    delete from auth.refresh_tokens where user_id = v_auth_id;
   end if;
 
   v_first_name := split_part(trim(p_full_name), ' ', 1);
   v_last_name := nullif(trim(substr(trim(p_full_name), length(v_first_name) + 1)), '');
-
-  insert into auth.users (
-    instance_id, id, aud, role, email,
-    encrypted_password, email_confirmed_at,
-    raw_app_meta_data, raw_user_meta_data,
-    created_at, updated_at,
-    confirmation_token, recovery_token,
-    email_change, email_change_token_new, email_change_token_current
-  ) values (
-    '00000000-0000-0000-0000-000000000000',
-    gen_random_uuid(),
-    'authenticated', 'authenticated',
-    v_norm_email,
-    crypt(p_password, gen_salt('bf')),
-    now(),
-    '{"provider":"email","providers":["email"]}',
-    '{}',
-    now(), now(), '', '', '', '', ''
-  )
-  returning id into v_auth_id;
 
   insert into public.voters (id, auth_uid, ra_number, email, first_name, middle_name, last_name, role, is_accredited, is_active, department, phone, registered_at)
   values (
@@ -162,7 +180,7 @@ $$;
 -- Revokes the voter's existing session tokens so the new password applies
 -- immediately; the voter can change it to their own later in Profile.
 create or replace function public.admin_change_password(p_voter_id text, p_new_password text)
-returns boolean language plpgsql security definer set search_path = public as
+returns boolean language plpgsql security definer set search_path = public, extensions as
 $$
 declare
   v_auth_uid uuid;
