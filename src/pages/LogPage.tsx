@@ -2,7 +2,7 @@
 import {
   ArrowLeft,
   ShieldCheck,
-  AlertTriangle,
+  AlertCircle,
   Search,
   CheckCircle2,
   RefreshCw,
@@ -188,9 +188,9 @@ export const LogPage: React.FC<{ onNavigate: (page: string) => void }> = ({ onNa
               <span>Chain Verified ({verification.totalBlocks} Blocks Valid)</span>
             </div>
           ) : (
-            <div className="flex items-center space-x-2 px-3.5 py-1.5 rounded-full bg-red-50 dark:bg-red-950 text-red-800 dark:text-red-300 border border-red-300 text-xs font-semibold">
-              <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
-              <span>Tamper Detected!</span>
+            <div className="flex items-center space-x-2 px-3.5 py-1.5 rounded-full bg-gray-50 dark:bg-slate-800 text-gray-600 dark:text-slate-400 border border-gray-200 dark:border-slate-700 text-xs font-semibold">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>Chain Verification Pending</span>
             </div>
           )}
 

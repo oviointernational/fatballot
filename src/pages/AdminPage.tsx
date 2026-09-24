@@ -34,12 +34,14 @@ import {
   Square,
   Zap,
   KeyRound,
-  Ban
+  Ban,
+  GripVertical,
+  ListOrdered
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useElection } from '../context/ElectionContext';
 import { supabase } from '../lib/supabase';
-import { mapVoterRow, mapAgentRow, mapObserverRow, mapTimelineRow, mapScreeningCriteriaRow, mapCandidateScreeningRow } from '../lib/mappers';
+import { mapVoterRow, mapAgentRow, mapObserverRow, mapTimelineRow, mapScreeningCriteriaRow, mapCandidateScreeningRow, mapYCECRow } from '../lib/mappers';
 import { 
   SiteSettings, 
   Voter, 
@@ -49,7 +51,8 @@ import {
   ElectionAgent, 
   Observer,
   CandidateScreening,
-  TimelineItem
+  TimelineItem,
+  YCECMember
 } from '../types';
 
 type AdminTab = 'access' | 'committee' | 'users' | 'offices' | 'agents' | 'observers' | 'timeline';
@@ -88,6 +91,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
 
   // Tab 2: Committee Admin state
   const [committeeAdmins, setCommitteeAdmins] = useState<Voter[]>([]);
+  const [ycecMembers, setYcecMembers] = useState<YCECMember[]>([]);
   const [committeeSearch, setCommitteeSearch] = useState('');
   const [showAddCommitteeModal, setShowAddCommitteeModal] = useState(false);
   const [selectedVoterIdsForCommittee, setSelectedVoterIdsForCommittee] = useState<string[]>([]);
@@ -185,13 +189,19 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
   const [resetFeedback, setResetFeedback] = useState<string | null>(null);
   const [resettingPassword, setResettingPassword] = useState(false);
 
-  // Tab 3: Offices
+// Tab 3: Offices
   const [officeSearch, setOfficeSearch] = useState('');
   const [newOfficeTitle, setNewOfficeTitle] = useState('');
   const [newOfficeDesc, setNewOfficeDesc] = useState('');
-  const [selectedOfficeForAssign, setSelectedOfficeForAssign] = useState<string>('');
+  const [selectedOfficeForAssign, setSelectedOfficeForAssign] = useState('');
   const [assignUserSearch, setAssignUserSearch] = useState('');
   const [assignOfficeError, setAssignOfficeError] = useState<string | null>(null);
+
+  // Drag-to-reorder state (offices / contestants / commissioners)
+  const [officeDragIndex, setOfficeDragIndex] = useState<number | null>(null);
+  const [candidateDrag, setCandidateDrag] = useState<{ officeId: string; index: number } | null>(null);
+  const [commissionerDragIndex, setCommissionerDragIndex] = useState<number | null>(null);
+  const [reorderFeedback, setReorderFeedback] = useState<string | null>(null);
 
   // Screening Criteria management
   const [selectedOfficeForCriteria, setSelectedOfficeForCriteria] = useState<string>('');
@@ -240,12 +250,13 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
 
   const fetchAllData = async () => {
     try {
-      const [votersRes, agentsRes, obsRes, critRes, timeRes] = await Promise.all([
+      const [votersRes, agentsRes, obsRes, critRes, timeRes, ycecRes] = await Promise.all([
         supabase.from('voters').select('*').order('ra_number'),
         supabase.from('agents').select('*').order('assigned_at', { ascending: false }),
         supabase.from('observers').select('*'),
         supabase.from('screening_criteria').select('*'),
-        supabase.from('timeline').select('*').order('"order"')
+        supabase.from('timeline').select('*').order('"order"'),
+        supabase.from('ycec_members').select('*').order('"order"')
       ]);
 
       if (!votersRes.error) setVoters((votersRes.data || []).map(mapVoterRow));
@@ -253,6 +264,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
       if (!obsRes.error) setObservers((obsRes.data || []).map(mapObserverRow));
       if (!critRes.error) setScreeningCriteria((critRes.data || []).map(mapScreeningCriteriaRow));
       if (!timeRes.error) setTimelineItems((timeRes.data || []).map(mapTimelineRow));
+      if (!ycecRes.error) setYcecMembers((ycecRes.data || []).map(mapYCECRow));
       setCommitteeAdmins((votersRes.data || []).map(mapVoterRow).filter(v => v.role === 'committee' || v.role === 'ycec'));
     } catch (e) {
       console.error(e);
@@ -274,6 +286,70 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
   // ----------------------------------------------------
   // ACTION HANDLERS
   // ----------------------------------------------------
+
+  // Generic drag-reorder: [fromIndex] dragged onto [toIndex]
+  const reorderArray = <T,>(list: T[], fromIndex: number, toIndex: number): T[] => {
+    const next = [...list];
+    const [moved] = next.splice(fromIndex, 1);
+    next.splice(toIndex, 0, moved);
+    return next;
+  };
+
+  // Positions (offices) drag-to-reorder
+  const handleOfficeReorder = async (toIndex: number) => {
+    if (officeDragIndex === null || officeDragIndex === toIndex) { setOfficeDragIndex(null); return; }
+    const sorted = [...offices].sort((a, b) => a.order - b.order);
+    const next = reorderArray(sorted, officeDragIndex, toIndex);
+    const rows = next.map((o, i) => ({ id: o.id, order: i + 1 }));
+    const from = officeDragIndex + 1;
+    const to = toIndex + 1;
+    setOfficeDragIndex(null);
+    const { error } = await supabase.from('offices').upsert(rows, { onConflict: 'id' });
+    if (!error) {
+      audit('OFFICES_REORDERED', { count: rows.length, from, to });
+      setReorderFeedback('Position order saved.');
+      setTimeout(() => setReorderFeedback(null), 3000);
+      refreshAll();
+    } else {
+      alert(error.message || 'Failed to reorder positions.');
+    }
+  };
+
+  // Contestants (candidates) drag-to-reorder within an office
+  const handleContestantReorder = async (officeId: string, toIndex: number) => {
+    if (!candidateDrag || candidateDrag.officeId !== officeId || candidateDrag.index === toIndex) { setCandidateDrag(null); return; }
+    const sorted = candidates.filter(c => c.officeId === officeId).sort((a, b) => a.order - b.order);
+    const next = reorderArray(sorted, candidateDrag.index, toIndex);
+    const rows = next.map((c, i) => ({ id: c.id, order: i + 1 }));
+    setCandidateDrag(null);
+    const { error } = await supabase.from('candidates').upsert(rows, { onConflict: 'id' });
+    if (!error) {
+      audit('CONTESTANTS_REORDERED', { officeId, count: rows.length });
+      setReorderFeedback('Contestant ballot order saved.');
+      setTimeout(() => setReorderFeedback(null), 3000);
+      refreshAll();
+    } else {
+      alert(error.message || 'Failed to reorder contestants.');
+    }
+  };
+
+  // Commissioners (YCEC directory) drag-to-reorder
+  const handleCommissionerReorder = async (toIndex: number) => {
+    if (commissionerDragIndex === null || commissionerDragIndex === toIndex) { setCommissionerDragIndex(null); return; }
+    const sorted = [...ycecMembers].sort((a, b) => a.order - b.order);
+    const next = reorderArray(sorted, commissionerDragIndex, toIndex);
+    const rows = next.map((m, i) => ({ id: m.id, order: i + 1 }));
+    setCommissionerDragIndex(null);
+    const { error } = await supabase.from('ycec_members').upsert(rows, { onConflict: 'id' });
+    if (!error) {
+      audit('COMMISSIONERS_REORDERED', { count: rows.length });
+      setReorderFeedback('Commissioner display order saved.');
+      setTimeout(() => setReorderFeedback(null), 3000);
+      fetchAllData();
+    } else {
+      alert(error.message || 'Failed to reorder commissioners.');
+    }
+  };
 
   // Committee Admin / YCEC Commissioner Handlers
   const handleAddCommitteeAdmins = async (e: React.FormEvent) => {
@@ -2055,6 +2131,59 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
             </div>
           </div>
 
+          {/* YCEC Commissioners Directory — drag to rearrange display order */}
+          {ycecMembers.length > 0 && (
+            <div className="bg-white dark:bg-[#0F172A] border border-gray-200 dark:border-[#1E2E4E] rounded-3xl p-6 shadow-sm space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-base font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                    <ListOrdered className="w-4 h-4 text-teal-600" />
+                    <span>YCEC Commissioners Directory Display Order</span>
+                  </h3>
+                  <p className="text-[11px] text-gray-400 mt-0.5">
+                    Drag rows to rearrange the commissioner roster order (reflected on the dashboard).
+                  </p>
+                </div>
+                {reorderFeedback && (
+                  <span className="px-3 py-1 text-xs font-semibold bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 rounded-xl border border-emerald-300">
+                    {reorderFeedback}
+                  </span>
+                )}
+              </div>
+
+              <div className="space-y-1.5">
+                {[...ycecMembers]
+                  .sort((a, b) => a.order - b.order)
+                  .map((m, idx) => (
+                    <div
+                      key={m.id}
+                      draggable
+                      onDragStart={() => setCommissionerDragIndex(idx)}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={() => handleCommissionerReorder(idx)}
+                      onDragEnd={() => setCommissionerDragIndex(null)}
+                      className={`flex items-center justify-between rounded-xl px-3 py-2 bg-gray-50 dark:bg-[#16223B] border cursor-grab active:cursor-grabbing transition-opacity ${
+                        commissionerDragIndex === idx ? 'opacity-40 border-teal-400' : 'border-gray-200 dark:border-[#1E2E4E]'
+                      }`}
+                      title="Drag to reorder commissioner"
+                    >
+                      <div className="flex items-center space-x-3 min-w-0">
+                        <GripVertical className="w-4 h-4 text-gray-300 dark:text-slate-600 shrink-0" />
+                        <span className="w-6 h-6 rounded-full bg-teal-100 dark:bg-teal-950 text-teal-700 dark:text-teal-300 text-[11px] font-bold flex items-center justify-center shrink-0">
+                          {m.name.charAt(0)}
+                        </span>
+                        <div className="min-w-0">
+                          <p className="font-semibold text-gray-900 dark:text-white text-xs truncate">{m.name}</p>
+                          <p className="text-[11px] text-gray-500 truncate">{m.role}{m.tenure ? ` · ${m.tenure}` : ''}</p>
+                        </div>
+                      </div>
+                      <span className="font-mono text-[10px] text-gray-400 shrink-0">Order {idx + 1}</span>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
+
           {/* Modal: Appoint Committee Administrators (Select multiple from registered voters) */}
           {showAddCommitteeModal && (
             <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
@@ -2697,9 +2826,19 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
             {/* List Offices */}
             <div className="lg:col-span-2 bg-white dark:bg-[#0F172A] border border-gray-200 dark:border-[#1E2E4E] rounded-3xl p-6 shadow-sm space-y-4">
               <div className="flex items-center justify-between">
-                <h2 className="text-base font-bold text-gray-900 dark:text-white">
-                  Contested Offices Registry ({offices.length})
-                </h2>
+                <div>
+                  <h2 className="text-base font-bold text-gray-900 dark:text-white">
+                    Contested Offices Registry ({offices.length})
+                  </h2>
+                  <p className="text-[10px] text-gray-400 flex items-center gap-1 mt-0.5">
+                    <GripVertical className="w-3 h-3" /> Drag positions & contestants to rearrange (ballot order)
+                  </p>
+                  {reorderFeedback && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 mt-1 text-[10px] font-semibold bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 rounded-lg">
+                      <Check className="w-3 h-3" /> {reorderFeedback}
+                    </span>
+                  )}
+                </div>
                 <div className="relative w-48">
                   <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-2.5" />
                   <input
@@ -2716,13 +2855,32 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                 {offices
                   .filter(o => o.title.toLowerCase().includes(officeSearch.toLowerCase()))
                   .map(o => {
-                    const cands = candidates.filter(c => c.officeId === o.id);
+                    const fullIndex = offices.findIndex(ox => ox.id === o.id);
+                    const cands = candidates.filter(c => c.officeId === o.id).sort((a, b) => a.order - b.order);
                     return (
-                      <div key={o.id} className="p-3.5 rounded-2xl bg-gray-50 dark:bg-[#16223B] border border-gray-200 dark:border-[#1E2E4E] flex flex-col justify-between space-y-2">
+                      <div
+                        key={o.id}
+                        draggable
+                        onDragStart={() => setOfficeDragIndex(fullIndex)}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={() => handleOfficeReorder(fullIndex)}
+                        onDragEnd={() => setOfficeDragIndex(null)}
+                        className={`p-3.5 rounded-2xl bg-gray-50 dark:bg-[#16223B] border flex flex-col space-y-2 transition-opacity cursor-grab active:cursor-grabbing ${
+                          officeDragIndex === fullIndex
+                            ? 'opacity-40 border-purple-400'
+                            : officeDragIndex !== null
+                            ? 'opacity-60'
+                            : 'border-gray-200 dark:border-[#1E2E4E]'
+                        }`}
+                        title="Drag to reorder position"
+                      >
                         <div className="flex items-start justify-between">
-                          <div>
-                            <span className="font-extrabold text-sm text-gray-900 dark:text-white">{o.title}</span>
-                            <p className="text-[11px] text-gray-500 line-clamp-2 mt-0.5">{o.description}</p>
+                          <div className="flex items-start space-x-2 min-w-0">
+                            <GripVertical className="w-4 h-4 text-gray-300 dark:text-slate-600 mt-0.5 shrink-0" />
+                            <div className="min-w-0">
+                              <span className="font-extrabold text-sm text-gray-900 dark:text-white block truncate">{o.title}</span>
+                              <p className="text-[11px] text-gray-500 line-clamp-2 mt-0.5">{o.description}</p>
+                            </div>
                           </div>
                           <button
                             onClick={() => handleDeleteOffice(o.id)}
@@ -2732,8 +2890,37 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
+
+                        {/* Contestants — drag to rearrange ballot order */}
+                        {cands.length > 0 && (
+                          <div className="pt-1 border-t border-gray-200/60 dark:border-slate-800 space-y-1">
+                            {cands.map((c, candIndex) => (
+                              <div
+                                key={c.id}
+                                draggable
+                                onDragStart={() => setCandidateDrag({ officeId: o.id, index: candIndex })}
+                                onDragOver={(e) => e.preventDefault()}
+                                onDrop={() => handleContestantReorder(o.id, candIndex)}
+                                onDragEnd={() => setCandidateDrag(null)}
+                                className={`flex items-center justify-between rounded-lg px-2 py-1.5 bg-white dark:bg-[#0F172A] border border-gray-200/70 dark:border-slate-800 cursor-grab active:cursor-grabbing ${
+                                  candidateDrag?.officeId === o.id && candidateDrag.index === candIndex ? 'opacity-40' : ''
+                                }`}
+                                title="Drag to rearrange ballot order"
+                              >
+                                <div className="flex items-center space-x-2 min-w-0">
+                                  <GripVertical className="w-3 h-3 text-gray-300 dark:text-slate-600 shrink-0" />
+                                  <span className="text-[11px] font-semibold text-gray-800 dark:text-slate-200 truncate">{c.name}</span>
+                                </div>
+                                <span className="font-mono text-[10px] text-gray-400 shrink-0">RA-{c.raNumber}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
                         <div className="flex items-center justify-between text-[11px] pt-1 border-t border-gray-200/60 dark:border-slate-800">
-                          <span className="font-mono text-gray-400">Order: {o.order}</span>
+                          <span className="font-mono text-gray-400 flex items-center gap-1">
+                            <ListOrdered className="w-3 h-3" /> Pos. {fullIndex + 1}
+                          </span>
                           <span className="font-bold text-blue-600">{cands.length} Contestants</span>
                         </div>
                       </div>

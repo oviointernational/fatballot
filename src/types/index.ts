@@ -18,6 +18,7 @@ export interface CandidateProfile {
   currentOffices: string[];
   achievements: string[];
   contactEmail: string;
+  order: number;
 }
 
 export interface Voter {
@@ -109,6 +110,7 @@ export interface YCECMember {
   phone: string;
   avatar: string;
   tenure: string;
+  order: number;
 }
 
 export interface SiteSettings {

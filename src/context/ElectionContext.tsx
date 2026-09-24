@@ -60,7 +60,7 @@ export const ElectionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const [setRes, offRes, candRes] = await Promise.all([
         supabase.from('settings').select('data').eq('id', 1).maybeSingle(),
         supabase.from('offices').select('*').order('order'),
-        supabase.from('candidates').select('*')
+        supabase.from('candidates').select('*').order('order')
       ]);
 
       if (setRes.data) setSettings(mapSettings(setRes.data.data));

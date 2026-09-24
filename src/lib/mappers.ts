@@ -44,7 +44,8 @@ export const mapCandidateRow = (row: any): CandidateProfile => ({
   antecedent: row.antecedent || [],
   currentOffices: row.current_offices || [],
   achievements: row.achievements || [],
-  contactEmail: row.contact_email || ''
+  contactEmail: row.contact_email || '',
+  order: row.order || 0
 });
 
 export const mapCastVoteRow = (row: any): CastVote => ({
@@ -73,7 +74,8 @@ export const mapYCECRow = (row: any): YCECMember => ({
   email: row.email,
   phone: row.phone || '',
   avatar: row.avatar || '',
-  tenure: row.tenure || ''
+  tenure: row.tenure || '',
+  order: row.order || 0
 });
 
 export const mapScreeningCriteriaRow = (row: any): ScreeningCriteria => ({

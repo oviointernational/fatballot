@@ -375,7 +375,8 @@ create table if not exists public.candidates (
   antecedent      jsonb not null default '[]'::jsonb,
   current_offices jsonb not null default '[]'::jsonb,
   achievements    jsonb not null default '[]'::jsonb,
-  contact_email   text not null default ''
+  contact_email   text not null default '',
+  "order"         integer not null default 0
 );
 
 -- --------------------------------------------------------------------------
@@ -427,16 +428,13 @@ create table if not exists public.ycec_members (
   email  text not null,
   phone  text not null default '',
   avatar text not null default '',
-  tenure text not null default ''
+  tenure text not null default '',
+  "order" integer not null default 0
 );
 
-insert into public.ycec_members (id, name, role, email, phone, avatar, tenure) VALUES
-  ('ycec-1', 'Engr. Nnamdi Paul Azikiwe', 'Chief Electoral Commissioner & Chairman', 'chairman.ycec@fatballot.org', '+234 803 111 2221', 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=400&q=80', '2025 - 2027'),
-  ('ycec-2', 'Prof. Aisha Mohammed Danjuma', 'Secretary to the Electoral Commission', 'secretary.ycec@fatballot.org', '+234 803 111 2222', 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=400&q=80', '2025 - 2027'),
-  ('ycec-3', 'Barr. Femi Kayode Alabi', 'Chief Legal & Constitutional Advisory Counsel', 'legal.ycec@fatballot.org', '+234 803 111 2223', 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=400&q=80', '2025 - 2027'),
-  ('ycec-4', 'Dr. Maryam Chinedu Sanni', 'Head of Digital Cryptography & Audit Ledger', 'security.ycec@fatballot.org', '+234 803 111 2224', 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=400&q=80', '2025 - 2027'),
-  ('ycec-5', 'Mr. Victor Damilola Adeleke', 'Director of Logistics, Accreditation & Collation', 'logistics.ycec@fatballot.org', '+234 803 111 2225', 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?auto=format&fit=crop&w=400&q=80', '2025 - 2027')
-on conflict (id) do nothing;
+-- NO demo/placeholder commissioner roster: the directory starts empty and is
+-- appointed from the Admin -> Committee tab, with a draggable display order.
+delete from public.ycec_members where id in ('ycec-1', 'ycec-2', 'ycec-3', 'ycec-4', 'ycec-5');
 
 -- --------------------------------------------------------------------------
 -- SCREENING CRITERIA + CANDIDATE SCREENINGS

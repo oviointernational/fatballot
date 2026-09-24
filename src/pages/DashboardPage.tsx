@@ -64,7 +64,7 @@ export const DashboardPage: React.FC<{ onNavigate: (page: string) => void }> = (
       try {
         const { data: voters } = await supabase.from('voters').select('*').order('ra_number');
         if (voters) setVotersList(voters.map(mapVoterRow));
-        const { data: ycec } = await supabase.from('ycec_members').select('*').order('role');
+        const { data: ycec } = await supabase.from('ycec_members').select('*').order('"order"');
         if (ycec) setYcecList(ycec.map(mapYCECRow));
         const { data: timeline } = await supabase.from('timeline').select('*').order('order');
         if (timeline) setTimelineList(timeline.map(mapTimelineRow));

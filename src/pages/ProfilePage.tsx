@@ -575,9 +575,6 @@ export const ProfilePage: React.FC<{ onNavigate: (page: string) => void }> = ({ 
               <FileText className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
               <span>Personal Security & Activity Ledger</span>
             </h2>
-            <p className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">
-              Your sign-ins, ballots, password changes, and profile updates — plus actions performed on your account (enrolment, accreditation, admin changes) with timestamps and the actor responsible.
-            </p>
           </div>
           <span className="text-xs font-mono text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
             <CheckCircle2 className="w-3.5 h-3.5" />
