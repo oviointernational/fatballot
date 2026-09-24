@@ -570,7 +570,7 @@ export const ProfilePage: React.FC<{ onNavigate: (page: string) => void }> = ({ 
               <span>Personal Security & Activity Ledger</span>
             </h2>
             <p className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">
-              Cryptographically signed actions attributed to your RA credentials
+              Your sign-ins, ballots, password changes, and profile updates — plus actions performed on your account (enrolment, accreditation, admin changes) with timestamps and the actor responsible.
             </p>
           </div>
           <span className="text-xs font-mono text-emerald-600 dark:text-emerald-400 flex items-center gap-1">

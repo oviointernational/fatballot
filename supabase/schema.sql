@@ -514,6 +514,7 @@ create table if not exists public.audit_log (
 
 create index if not exists idx_audit_log_event ON public.audit_log (event_type);
 create index if not exists idx_audit_log_actor_ra ON public.audit_log ((actor->>'raNumber'));
+create index if not exists idx_audit_log_details_gin ON public.audit_log using gin (details);
 
 create or replace function public.append_audit(p_event_type text, p_actor jsonb default '{}'::jsonb, p_details jsonb default '{}'::jsonb)
 returns void language plpgsql security definer set search_path = public as
@@ -557,11 +558,22 @@ begin
 end;
 $$;
 
--- A voter's own audit trail (via the actor's RA number).
+-- A voter's own audit trail: every action they performed AND every action
+-- performed ON their account (enrolment, accreditation, password changes,
+-- profile edits, votes) — timestamped and attributed to the actor.
 create or replace view public.my_audit as
-  select * from public.audit_log
-  where actor->>'raNumber' = (select ra_number::text from public.voters where auth_uid = auth.uid())
-  order by id desc;
+  with me as (
+    select id, ra_number::text as ra
+    from public.voters
+    where auth_uid = auth.uid()
+  )
+  select al.*
+  from public.audit_log al, me
+  where al.actor->>'raNumber'      = me.ra
+     or al.details->>'raNumber'    = me.ra
+     or al.details->>'voterId'     = me.id
+     or al.details->>'voterRaNumber' = me.ra
+  order by al.id desc;
 
 -- Contestant: "who voted for you" — gated by settings + ownership.
 create or replace function public.voters_for_candidate(p_candidate_id text)

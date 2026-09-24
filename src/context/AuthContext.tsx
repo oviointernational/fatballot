@@ -81,6 +81,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
+  /** Appends an audit-ladder event attributed to a voter. */
+  const auditSelf = useCallback(async (eventType: string, details: Record<string, unknown> = {}, actorOverride?: Voter): Promise<void> => {
+    const actor = actorOverride || user;
+    if (!actor) return;
+    try {
+      await supabase.rpc('append_audit', {
+        p_event_type: eventType,
+        p_actor: { id: actor.id, raNumber: actor.raNumber, name: actor.name, email: actor.email, role: actor.role },
+        p_details: { raNumber: actor.raNumber, ...details }
+      });
+    } catch (e) {
+      console.error(`Audit append failed (${eventType})`, e);
+    }
+  }, [user]);
+
   /** Finishes a sign-up whose voter insert was deferred (email-confirm link). */
   const completeRegistration = useCallback(async (): Promise<AuthResult> => {
     const raw = localStorage.getItem(PENDING_KEY);
@@ -190,6 +205,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       setUser(profile);
       setSessionToken(data.session.access_token);
+      await auditSelf('AUTH_LOGIN_SUCCESS', { method: 'password' }, profile);
       return { success: true, message: 'Signed in successfully.' };
     } catch (err: any) {
       return { success: false, message: err.message || 'Network error occurred.' };
@@ -251,6 +267,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const { error } = await supabase.auth.updateUser({ password: newPassword });
     if (error) return { success: false, message: error.message };
     setIsRecovery(false);
+    await auditSelf('PASSWORD_RESET', { method: 'recovery-link' });
     return { success: true, message: 'Password updated successfully.' };
   };
 
@@ -267,6 +284,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (verifyError) return { success: false, message: 'Your current password is incorrect.' };
       const { error } = await supabase.auth.updateUser({ password: newPassword });
       if (error) return { success: false, message: error.message };
+      await auditSelf('PASSWORD_CHANGED');
       return { success: true, message: 'Password changed successfully.' };
     } catch (err: any) {
       return { success: false, message: err.message || 'Could not change password.' };
@@ -289,6 +307,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       })
       .eq('auth_uid', authUser.id);
     if (error) return { success: false, message: error.message };
+    await auditSelf('VOTER_UPDATED', { fields: Object.keys(partial) });
     const profile = await loadVoterByAuthId(authUser.id);
     if (profile) setUser(profile);
     return { success: true, message: 'Profile updated successfully.' };
@@ -299,6 +318,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = async () => {
+    await auditSelf('AUTH_LOGOUT');
     await supabase.auth.signOut();
     setUser(null);
     setSessionToken(null);
