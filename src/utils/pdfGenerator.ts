@@ -209,7 +209,7 @@ export const exportContestantsPdf = async (candidates: CandidateProfile[], offic
 // 4. Export YCEC Members
 export const exportYCECPdf = async (members: YCECMember[], token?: string | null) => {
   const doc = new jsPDF();
-  addBrandedHeader(doc, 'Youth & Electoral Committee (YCEC) Registry', 'Official Electoral Commissioners and Secretariat Officers');
+  addBrandedHeader(doc, 'YCEC Commissioners Registry', 'Official Electoral Commissioners and Secretariat Officers');
 
   const tableData = members.map((m, idx) => [
     idx + 1,

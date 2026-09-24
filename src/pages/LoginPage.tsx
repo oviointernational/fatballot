@@ -167,7 +167,7 @@ export const LoginPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
             </div>
             <p className="text-[11px] leading-relaxed">
               Every ballot is cryptographically signed into a tamper-evident, SHA-256 chained
-              audit ledger. Your registration must match the committee's registration bank.
+              audit ledger. Your registration must match the commissioners' registration bank.
             </p>
           </div>
         </div>

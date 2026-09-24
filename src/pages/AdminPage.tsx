@@ -55,7 +55,7 @@ import {
   YCECMember
 } from '../types';
 
-type AdminTab = 'access' | 'committee' | 'users' | 'offices' | 'agents' | 'observers' | 'timeline';
+type AdminTab = 'access' | 'commissioners' | 'users' | 'offices' | 'agents' | 'observers' | 'timeline';
 
 const genToken = (): string =>
   Array.from(crypto.getRandomValues(new Uint8Array(24)))
@@ -67,8 +67,8 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
   const { settings, updateSettings, refreshAll, offices, candidates } = useElection();
 
   const isSuperadmin = user?.role === 'superadmin';
-  const isCommittee = user?.role === 'committee';
-  const canAccessAdmin = isSuperadmin || isCommittee;
+  const isCommissioner = user?.role === 'commissioner';
+  const canAccessAdmin = isSuperadmin || isCommissioner;
 
   const audit = async (eventType: string, details: Record<string, any>): Promise<void> => {
     const { error } = await supabase.rpc('append_audit', {
@@ -89,20 +89,19 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
   const [observers, setObservers] = useState<Observer[]>([]);
   const [screeningCriteria, setScreeningCriteria] = useState<ScreeningCriteria[]>([]);
 
-  // Tab 2: Committee Admin state
-  const [committeeAdmins, setCommitteeAdmins] = useState<Voter[]>([]);
+  // Tab 2: Commissioners state (single merged officers registry)
+  const [commissioners, setCommissioners] = useState<Voter[]>([]);
   const [ycecMembers, setYcecMembers] = useState<YCECMember[]>([]);
-  const [committeeSearch, setCommitteeSearch] = useState('');
-  const [showAddCommitteeModal, setShowAddCommitteeModal] = useState(false);
-  const [selectedVoterIdsForCommittee, setSelectedVoterIdsForCommittee] = useState<string[]>([]);
-  const [voterSearchForCommittee, setVoterSearchForCommittee] = useState('');
-  const [addingCommittee, setAddingCommittee] = useState(false);
-  const [committeeFeedback, setCommitteeFeedback] = useState<string | null>(null);
-  const [appointmentRole, setAppointmentRole] = useState<'committee' | 'ycec'>('committee');
+  const [commissionerSearch, setCommissionerSearch] = useState('');
+  const [showAddCommissionerModal, setShowAddCommissionerModal] = useState(false);
+  const [selectedVoterIdsForCommissioners, setSelectedVoterIdsForCommissioners] = useState<string[]>([]);
+  const [voterSearchForCommissioners, setVoterSearchForCommissioners] = useState('');
+  const [addingCommissioner, setAddingCommissioner] = useState(false);
+  const [commissionerFeedback, setCommissionerFeedback] = useState<string | null>(null);
 
-  // Auto-redirect away from Superadmin-only tabs if user is committee admin
+  // Auto-redirect away from Superadmin-only tabs if user is a commissioner
   useEffect(() => {
-    if (!isSuperadmin && (activeTab === 'access' || activeTab === 'committee')) {
+    if (!isSuperadmin && (activeTab === 'access' || activeTab === 'commissioners')) {
       setActiveTab('users');
     }
   }, [isSuperadmin, activeTab]);
@@ -123,12 +122,12 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
 
   // Tab 1: Access Control & Superadmin Settings
   const [permissions, setPermissions] = useState(settings.permissions || {
-    canRegisterUsers: ['superadmin', 'committee'],
-    canAccreditUsers: ['superadmin', 'committee'],
-    canCreateOffices: ['superadmin', 'committee'],
-    canAssignOffices: ['superadmin', 'committee'],
-    canCreateScreeningCriteria: ['superadmin', 'committee'],
-    canAssignAgents: ['superadmin', 'committee'],
+    canRegisterUsers: ['superadmin', 'commissioner'],
+    canAccreditUsers: ['superadmin', 'commissioner'],
+    canCreateOffices: ['superadmin', 'commissioner'],
+    canAssignOffices: ['superadmin', 'commissioner'],
+    canCreateScreeningCriteria: ['superadmin', 'commissioner'],
+    canAssignAgents: ['superadmin', 'commissioner'],
     canCreateObservers: ['superadmin']
   });
   const [siteName, setSiteName] = useState(settings.siteName);
@@ -176,7 +175,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
   const [regLastName, setRegLastName] = useState('');
   const [regEmail, setRegEmail] = useState('');
   const [regRaNumber, setRegRaNumber] = useState('');
-  const [regRole, setRegRole] = useState<'voter' | 'contestant' | 'committee'>('voter');
+  const [regRole, setRegRole] = useState<'voter' | 'contestant' | 'commissioner'>('voter');
   const [regDepartment, setRegDepartment] = useState('');
   const [regPhone, setRegPhone] = useState('');
   const [regPassword, setRegPassword] = useState('');
@@ -264,8 +263,30 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
       if (!obsRes.error) setObservers((obsRes.data || []).map(mapObserverRow));
       if (!critRes.error) setScreeningCriteria((critRes.data || []).map(mapScreeningCriteriaRow));
       if (!timeRes.error) setTimelineItems((timeRes.data || []).map(mapTimelineRow));
-      if (!ycecRes.error) setYcecMembers((ycecRes.data || []).map(mapYCECRow));
-      setCommitteeAdmins((votersRes.data || []).map(mapVoterRow).filter(v => v.role === 'committee' || v.role === 'ycec'));
+      const directoryRows = (!ycecRes.error ? (ycecRes.data || []) : []).map(mapYCECRow);
+      if (!ycecRes.error) setYcecMembers(directoryRows);
+      const officerList = (votersRes.data || []).map(mapVoterRow).filter(v => v.role === 'commissioner');
+      setCommissioners(officerList);
+      // Self-heal: commissioners merged from legacy roles (or enrolled
+      // directly) may lack a directory row — create the missing ones so the
+      // roster, display order and PDF export stay complete.
+      const dirIds = new Set(directoryRows.map(m => m.id));
+      const missing = officerList.filter(v => !dirIds.has(`ycec-${v.id}`));
+      if (missing.length > 0 && !ycecRes.error) {
+        const baseOrder = directoryRows.reduce((m, r) => Math.max(m, r.order || 0), 0);
+        const rows = missing.map((v, i) => ({
+          id: `ycec-${v.id}`,
+          name: `${v.firstName}${v.middleName ? ' ' + v.middleName : ''} ${v.lastName}`.replace(/\s+/g, ' ').trim() || `RA-${v.raNumber}`,
+          role: 'Commissioner',
+          email: v.email,
+          phone: v.phone || '',
+          avatar: v.avatar || '',
+          tenure: '2026',
+          order: baseOrder + i + 1
+        }));
+        const { data: healed, error: healError } = await supabase.from('ycec_members').upsert(rows, { onConflict: 'id' }).select('*');
+        if (!healError && healed) setYcecMembers([...directoryRows, ...healed.map(mapYCECRow)]);
+      }
     } catch (e) {
       console.error(e);
     }
@@ -351,42 +372,36 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
     }
   };
 
-  // Committee Admin / YCEC Commissioner Handlers
-  const handleAddCommitteeAdmins = async (e: React.FormEvent) => {
+  // Commissioner Handlers (single merged officers registry)
+  const handleAddCommissioners = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (selectedVoterIdsForCommittee.length === 0) return;
+    if (selectedVoterIdsForCommissioners.length === 0) return;
 
-    setAddingCommittee(true);
+    setAddingCommissioner(true);
     try {
-      const targetRole: 'committee' | 'ycec' = appointmentRole;
-      const selected = voters.filter(v => selectedVoterIdsForCommittee.includes(v.id));
+      const selected = voters.filter(v => selectedVoterIdsForCommissioners.includes(v.id));
 
       const { error } = await supabase
         .from('voters')
-        .update({ role: targetRole })
-        .in('id', selectedVoterIdsForCommittee);
+        .update({ role: 'commissioner' })
+        .in('id', selectedVoterIdsForCommissioners);
 
       if (!error) {
-        if (targetRole === 'ycec') {
-          const rows = selected.map(v => ({
-            id: `ycec-${v.id}`,
-            name: `${v.firstName} ${v.middleName ? v.middleName + ' ' : ''}${v.lastName}`,
-            role: 'YCEC Commissioner',
-            email: v.email,
-            phone: v.phone || '',
-            avatar: v.avatar || '',
-            tenure: ''
-          }));
-          await supabase.from('ycec_members').upsert(rows, { onConflict: 'id' });
-          setCommitteeFeedback(`${selectedVoterIdsForCommittee.length} officer(s) appointed as YCEC Commissioner(s)!`);
-          audit('YCEC_COMMISSIONER_APPOINTED', { voterIds: selectedVoterIdsForCommittee });
-        } else {
-          setCommitteeFeedback(`${selectedVoterIdsForCommittee.length} officer(s) appointed to Committee!`);
-          audit('COMMITTEE_ADMINS_APPOINTED', { voterIds: selectedVoterIdsForCommittee });
-        }
-        setTimeout(() => setCommitteeFeedback(null), 4000);
-        setShowAddCommitteeModal(false);
-        setSelectedVoterIdsForCommittee([]);
+        const rows = selected.map(v => ({
+          id: `ycec-${v.id}`,
+          name: `${v.firstName} ${v.middleName ? v.middleName + ' ' : ''}${v.lastName}`,
+          role: 'Commissioner',
+          email: v.email,
+          phone: v.phone || '',
+          avatar: v.avatar || '',
+          tenure: '2026'
+        }));
+        await supabase.from('ycec_members').upsert(rows, { onConflict: 'id' });
+        setCommissionerFeedback(`${selectedVoterIdsForCommissioners.length} officer(s) appointed as Commissioner(s)!`);
+        audit('COMMISSIONERS_APPOINTED', { voterIds: selectedVoterIdsForCommissioners });
+        setTimeout(() => setCommissionerFeedback(null), 4000);
+        setShowAddCommissionerModal(false);
+        setSelectedVoterIdsForCommissioners([]);
         fetchAllData();
       } else {
         alert(error.message || 'Failed to appoint officers.');
@@ -395,14 +410,14 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
       console.error(err);
       alert('Network error appointing officers.');
     } finally {
-      setAddingCommittee(false);
+      setAddingCommissioner(false);
     }
   };
 
-  const handleRemoveCommitteeAdmin = async (voterId: string) => {
-    const officer = committeeAdmins.find(v => v.id === voterId);
-    const label = officer?.role === 'ycec' ? 'YCEC Commissioner' : 'Electoral Committee officer';
-    if (!confirm(`Are you sure you want to remove this officer (${label})?`)) return;
+  const handleRemoveCommissioner = async (voterId: string) => {
+    const officer = commissioners.find(v => v.id === voterId);
+    const label = officer ? `${officer.firstName} ${officer.lastName} (RA-${officer.raNumber})` : voterId;
+    if (!confirm(`Are you sure you want to remove this commissioner (${label})?`)) return;
     try {
       const { error } = await supabase
         .from('voters')
@@ -410,21 +425,17 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
         .eq('id', voterId);
 
       if (!error) {
-        if (officer?.role === 'ycec') {
-          await supabase.from('ycec_members').delete().eq('id', `ycec-${voterId}`);
-          audit('YCEC_COMMISSIONER_REMOVED', { voterId });
-        } else {
-          audit('COMMITTEE_ADMIN_REMOVED', { voterId });
-        }
-        setCommitteeFeedback('Officer removed.');
-        setTimeout(() => setCommitteeFeedback(null), 4000);
+        await supabase.from('ycec_members').delete().eq('id', `ycec-${voterId}`);
+        audit('COMMISSIONER_REMOVED', { voterId });
+        setCommissionerFeedback('Commissioner removed.');
+        setTimeout(() => setCommissionerFeedback(null), 4000);
         fetchAllData();
       } else {
         alert(error.message || 'Failed to remove officer.');
       }
     } catch (err) {
       console.error(err);
-      alert('Network error removing committee administrator.');
+      alert('Network error removing commissioner.');
     }
   };
 
@@ -673,12 +684,19 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
     }
   };
 
-  // Register New User
+  // Register New User — minimal enrolment: RA number + email + password.
+  // Names/department/phone are optional; the voter completes them later
+  // from Profile -> Complete Your Profile.
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
     setRegError(null);
-    if (!regFirstName || !regLastName || !regEmail || !regRaNumber) {
-      setRegError('First name, last name, email, and numeric RA number are required.');
+    const raNum = parseInt(regRaNumber.replace(/^RA-?/i, '').trim(), 10);
+    if (!regRaNumber.trim() || isNaN(raNum) || raNum <= 0) {
+      setRegError('A numeric RA number is required (e.g. 5001).');
+      return;
+    }
+    if (!regEmail.trim() || !regEmail.includes('@')) {
+      setRegError('A valid email address is required.');
       return;
     }
     if (!regPassword || regPassword.length < 6) {
@@ -686,12 +704,15 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
       return;
     }
 
+    const nameParts = [regFirstName.trim(), regMiddleName.trim(), regLastName.trim()].filter(Boolean);
+    const fullName = nameParts.length > 0 ? nameParts.join(' ') : '';
+
     setSubmittingUser(true);
     try {
       const { error } = await supabase.rpc('admin_provision_user', {
-        p_ra_number: parseInt(regRaNumber, 10),
+        p_ra_number: raNum,
         p_email: regEmail.trim().toLowerCase(),
-        p_full_name: `${regFirstName.trim()} ${regMiddleName.trim() ? regMiddleName.trim() + ' ' : ''}${regLastName.trim()}`.trim(),
+        p_full_name: fullName,
         p_password: regPassword,
         p_role: regRole,
         p_department: regDepartment,
@@ -701,11 +722,11 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
       if (!error) {
         setVoters(prev => prev);
         audit('VOTER_REGISTERED', {
-          raNumber: regRaNumber.trim(),
+          raNumber: String(raNum),
           email: regEmail.trim().toLowerCase(),
           requestedRole: regRole
         });
-        alert(`${regFirstName.trim()} ${regLastName.trim()} (RA-${regRaNumber.trim()}) enrolled. They can sign in now at the sign-in screen with RA-${regRaNumber.trim()} and the password you just set.`);
+        alert(`RA-${raNum} enrolled${fullName ? ` (${fullName})` : ''}. They can sign in now with RA-${raNum} and the password you just set. They can complete the rest of their profile later from Profile.`);
         setShowCreateUserModal(false);
         setRegFirstName('');
         setRegMiddleName('');
@@ -715,12 +736,14 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
         setRegDepartment('');
         setRegPhone('');
         setRegPassword('');
+        setRegRole('voter');
+        fetchAllData();
         refreshAll();
       } else {
-        setRegError(error.message || 'Registration provisioning failed.');
+        setRegError('Registration was not accepted: ' + (error.message || 'provisioning failed.'));
       }
     } catch (err: any) {
-      setRegError(err.message || 'Network error.');
+      setRegError('Registration was not accepted: ' + (err.message || 'Network error.'));
     } finally {
       setSubmittingUser(false);
     }
@@ -1271,34 +1294,34 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
     }
   };
 
-  // Committee Admin Selection Helpers
-  const availableVotersForCommittee = voters.filter(v =>
-    v.role !== 'committee' && v.role !== 'superadmin' && (appointmentRole === 'ycec' ? v.role !== 'ycec' : true)
+  // Commissioner Selection Helpers
+  const availableVotersForCommissioners = voters.filter(v =>
+    v.role !== 'commissioner' && v.role !== 'superadmin'
   );
-  const filteredVotersForCommittee = availableVotersForCommittee.filter(v =>
-    `${v.firstName} ${v.lastName}`.toLowerCase().includes(voterSearchForCommittee.toLowerCase()) ||
-    v.raNumber.toLowerCase().includes(voterSearchForCommittee.toLowerCase()) ||
-    (v.department && v.department.toLowerCase().includes(voterSearchForCommittee.toLowerCase())) ||
-    v.email.toLowerCase().includes(voterSearchForCommittee.toLowerCase())
+  const filteredVotersForCommissioners = availableVotersForCommissioners.filter(v =>
+    `${v.firstName} ${v.lastName}`.toLowerCase().includes(voterSearchForCommissioners.toLowerCase()) ||
+    v.raNumber.toLowerCase().includes(voterSearchForCommissioners.toLowerCase()) ||
+    (v.department && v.department.toLowerCase().includes(voterSearchForCommissioners.toLowerCase())) ||
+    v.email.toLowerCase().includes(voterSearchForCommissioners.toLowerCase())
   );
 
   const toggleVoterSelection = (id: string) => {
-    setSelectedVoterIdsForCommittee(prev =>
+    setSelectedVoterIdsForCommissioners(prev =>
       prev.includes(id) ? prev.filter(vId => vId !== id) : [...prev, id]
     );
   };
 
   const selectAllFilteredVoters = () => {
-    const allFilteredIds = filteredVotersForCommittee.map(v => v.id);
-    setSelectedVoterIdsForCommittee(Array.from(new Set([...selectedVoterIdsForCommittee, ...allFilteredIds])));
+    const allFilteredIds = filteredVotersForCommissioners.map(v => v.id);
+    setSelectedVoterIdsForCommissioners(Array.from(new Set([...selectedVoterIdsForCommissioners, ...allFilteredIds])));
   };
 
   const clearSelectedVoters = () => {
-    setSelectedVoterIdsForCommittee([]);
+    setSelectedVoterIdsForCommissioners([]);
   };
 
   // ----------------------------------------------------
-  // ACCESS GUARD: Only Committee and SuperAdmin can view Admin Page
+  // ACCESS GUARD: Only Commissioners and SuperAdmin can view Admin Page
   // ----------------------------------------------------
   if (!canAccessAdmin) {
     return (
@@ -1308,7 +1331,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
         </div>
         <h2 className="text-xl font-bold text-gray-900 dark:text-white">Restricted Administration Chamber</h2>
         <p className="text-sm text-gray-500 dark:text-slate-400">
-          This portal is reserved strictly for appointed Committee Administrators and the Superadmin. Constituents without administrative accreditation cannot access this governance chamber.
+          This portal is reserved strictly for appointed Commissioners and the Superadmin. Constituents without administrative accreditation cannot access this governance chamber.
         </p>
         <div className="flex flex-col sm:flex-row items-center justify-center gap-2 pt-2">
           <button
@@ -1329,14 +1352,14 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
         <div>
           <div className="flex items-center space-x-2 text-xs font-bold uppercase tracking-wider text-purple-600 dark:text-purple-400">
             <Shield className="w-4 h-4" />
-            <span>Youth Electoral Committee Secretariat</span>
+            <span>YCEC Secretariat</span>
           </div>
           <h1 className="text-2xl md:text-3xl font-extrabold text-gray-900 dark:text-white mt-1">
             Electoral Governance & Administration
           </h1>
         </div>
 
-        {/* Tab Navigation - Non-Superadmins cannot see Access Control or Committee Admin */}
+        {/* Tab Navigation - Non-Superadmins cannot see Access Control or Commissioners */}
         <div className="flex flex-wrap bg-gray-100 dark:bg-[#16223B] p-1.5 rounded-2xl gap-1">
           {isSuperadmin && (
             <>
@@ -1352,14 +1375,14 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
               </button>
 
               <button
-                onClick={() => setActiveTab('committee')}
+                onClick={() => setActiveTab('commissioners')}
                 className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
-                  activeTab === 'committee'
+                  activeTab === 'commissioners'
                     ? 'bg-white dark:bg-purple-600 text-purple-700 dark:text-white shadow-xs'
                     : 'text-gray-600 dark:text-slate-400 hover:text-gray-900'
                 }`}
               >
-                2. Committee Admin
+                2. Commissioners
               </button>
             </>
           )}
@@ -1429,7 +1452,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
           </div>
           <div>
             <span className="font-bold text-gray-900 dark:text-white">
-              {isSuperadmin ? 'SuperAdmin Executive Session' : 'Committee Administrator Session'}
+              {isSuperadmin ? 'SuperAdmin Executive Session' : 'Commissioner Session'}
             </span>
             <p className="text-gray-500 dark:text-slate-400 mt-0.5">
               Logged in as: <strong>{user?.firstName} {user?.lastName}</strong> (RA-{user?.raNumber}) · Role: <span className="uppercase font-mono text-purple-600 dark:text-purple-400 font-bold">{user?.role}</span>
@@ -1496,19 +1519,19 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                           <span>SuperAdmin (Permanent System Authority)</span>
                         </div>
 
-                        {/* Specific Committee Admin Officers Selection */}
+                        {/* Specific Commissioner Officers Selection */}
                         <div className="pt-1 space-y-1.5">
                           <span className="text-[10px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider block">
-                            Delegate To Committee Officers:
+                            Delegate To Commissioners:
                           </span>
 
-                          {committeeAdmins.length === 0 ? (
+                          {commissioners.length === 0 ? (
                             <p className="text-[11px] text-amber-600 dark:text-amber-400 italic">
-                              No Committee Administrators appointed yet. Appoint officers in Committee Admin tab to delegate this authority.
+                              No Commissioners appointed yet. Appoint officers in the Commissioners tab to delegate this authority.
                             </p>
                           ) : (
                             <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
-                              {committeeAdmins.map((admin) => {
+                              {commissioners.map((admin) => {
                                 const isChecked = current.includes(admin.id) || current.includes(admin.raNumber);
                                 const toggleUser = () => {
                                   if (!isSuperadmin) return;
@@ -1972,9 +1995,9 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
       )}
 
       {/* ========================================================================= */}
-      {/* TAB 2: COMMITTEE ADMIN (SUPERADMIN ONLY) */}
+      {/* TAB 2: COMMISSIONERS (SUPERADMIN ONLY) */}
       {/* ========================================================================= */}
-      {isSuperadmin && activeTab === 'committee' && (
+      {isSuperadmin && activeTab === 'commissioners' && (
         <div className="space-y-6">
           <div className="bg-white dark:bg-[#0F172A] border border-gray-200 dark:border-[#1E2E4E] rounded-3xl p-6 md:p-8 shadow-sm space-y-6">
             {/* Header */}
@@ -1982,37 +2005,28 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
               <div>
                 <h2 className="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
                   <Shield className="w-5 h-5 text-purple-600 dark:text-purple-400" />
-                  <span>Committee & YCEC Officers Registry</span>
+                  <span>Commissioners Registry</span>
                 </h2>
                 <p className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">
-                  Appoint Committee Administrators or YCEC Commissioners from registered voters, or remove officers.
+                  Appoint Commissioners from registered voters, or remove officers.
                 </p>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                {committeeFeedback && (
+                {commissionerFeedback && (
                   <div className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 text-xs font-semibold rounded-xl border border-emerald-300">
                     <Check className="w-3.5 h-3.5" />
-                    <span>{committeeFeedback}</span>
+                    <span>{commissionerFeedback}</span>
                   </div>
                 )}
 
                 <button
                   type="button"
-                  onClick={() => { setAppointmentRole('ycec'); setShowAddCommitteeModal(true); }}
-                  className="px-4 py-2.5 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded-xl shadow-xs transition-all flex items-center space-x-2 text-xs"
-                >
-                  <Award className="w-4 h-4" />
-                  <span>+ Appoint YCEC Commissioner</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => { setAppointmentRole('committee'); setShowAddCommitteeModal(true); }}
+                  onClick={() => setShowAddCommissionerModal(true)}
                   className="px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl shadow-xs transition-all flex items-center space-x-2 text-xs"
                 >
                   <UserPlus className="w-4 h-4" />
-                  <span>+ Appoint Committee Admin</span>
+                  <span>+ Appoint Commissioner</span>
                 </button>
               </div>
             </div>
@@ -2023,19 +2037,19 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                 <Search className="w-4 h-4 text-gray-400 absolute left-3 top-2.5" />
                 <input
                   type="text"
-                  placeholder="Search committee officers by name, RA, or department..."
-                  value={committeeSearch}
-                  onChange={(e) => setCommitteeSearch(e.target.value)}
+                  placeholder="Search commissioners by name, RA, or department..."
+                  value={commissionerSearch}
+                  onChange={(e) => setCommissionerSearch(e.target.value)}
                   className="w-full pl-9 pr-3 py-2 rounded-xl border border-gray-200 dark:border-[#1E2E4E] bg-white dark:bg-[#0F172A] text-xs text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-purple-500"
                 />
               </div>
 
               <span className="text-xs text-gray-500">
-                Active Committee & YCEC Officers: <strong>{committeeAdmins.length}</strong>
+                Active Commissioners: <strong>{commissioners.length}</strong>
               </span>
             </div>
 
-            {/* Committee Admins Table */}
+            {/* Commissioners Table */}
             <div className="overflow-x-auto border border-gray-200 dark:border-[#1E2E4E] rounded-2xl">
               <table className="w-full text-left text-xs">
                 <thead className="bg-gray-50 dark:bg-[#16223B] text-gray-500 dark:text-slate-400 uppercase tracking-wider text-[10px] font-bold border-b border-gray-200 dark:border-[#1E2E4E]">
@@ -2049,19 +2063,19 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-[#1E2E4E]">
-                  {committeeAdmins.length === 0 ? (
+                  {commissioners.length === 0 ? (
                     <tr>
                       <td colSpan={6} className="py-12 text-center text-gray-400 text-xs">
-                        No officers appointed yet. Click "+ Appoint Committee Admin" or "+ Appoint YCEC Commissioner" to select officers from registered voters.
+                        No officers appointed yet. Click "+ Appoint Commissioner" to select officers from registered voters.
                       </td>
                     </tr>
                   ) : (
-                    committeeAdmins
+                    commissioners
                       .filter(admin =>
-                        `${admin.firstName} ${admin.lastName}`.toLowerCase().includes(committeeSearch.toLowerCase()) ||
-                        admin.raNumber.toLowerCase().includes(committeeSearch.toLowerCase()) ||
-                        admin.email.toLowerCase().includes(committeeSearch.toLowerCase()) ||
-                        (admin.department && admin.department.toLowerCase().includes(committeeSearch.toLowerCase()))
+                        `${admin.firstName} ${admin.lastName}`.toLowerCase().includes(commissionerSearch.toLowerCase()) ||
+                        admin.raNumber.toLowerCase().includes(commissionerSearch.toLowerCase()) ||
+                        admin.email.toLowerCase().includes(commissionerSearch.toLowerCase()) ||
+                        (admin.department && admin.department.toLowerCase().includes(commissionerSearch.toLowerCase()))
                       )
                       .map(admin => {
                         const authorityCount = Object.values(permissions || {}).filter(
@@ -2096,17 +2110,10 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                               {admin.department || 'General Secretariat'}
                             </td>
                             <td className="py-3.5 px-4">
-                              {admin.role === 'ycec' ? (
-    <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-teal-100 dark:bg-teal-950 text-teal-800 dark:text-teal-300">
-      <Award className="w-3 h-3" />
-      <span>YCEC Commissioner</span>
-    </span>
-  ) : (
-    <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 dark:bg-purple-950 text-purple-800 dark:text-purple-300">
-      <Shield className="w-3 h-3" />
-      <span>Committee Admin</span>
-    </span>
-  )}
+                              <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 dark:bg-purple-950 text-purple-800 dark:text-purple-300">
+                                <Shield className="w-3 h-3" />
+                                <span>Commissioner</span>
+                              </span>
                             </td>
                             <td className="py-3.5 px-4">
                               <span className="text-[11px] font-semibold text-gray-700 dark:text-slate-300">
@@ -2116,7 +2123,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                             <td className="py-3.5 px-4 text-right">
                               <button
                                 type="button"
-                                onClick={() => handleRemoveCommitteeAdmin(admin.id)}
+                                onClick={() => handleRemoveCommissioner(admin.id)}
                                 className="px-2.5 py-1 text-xs font-semibold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/50 rounded-lg transition-colors"
                               >
                                 Remove
@@ -2184,48 +2191,28 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
             </div>
           )}
 
-          {/* Modal: Appoint Committee Administrators (Select multiple from registered voters) */}
-          {showAddCommitteeModal && (
+          {/* Modal: Appoint Commissioners (Select multiple from registered voters) */}
+          {showAddCommissionerModal && (
             <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
               <div className="bg-white dark:bg-[#0F172A] border border-gray-200 dark:border-[#1E2E4E] rounded-3xl p-6 max-w-2xl w-full max-h-[85vh] flex flex-col shadow-2xl animate-fadeIn space-y-4">
                 {/* Modal Header */}
                 <div className="flex items-center justify-between border-b border-gray-100 dark:border-[#1E2E4E] pb-3">
                   <div>
                     <h3 className="font-bold text-gray-900 dark:text-white text-base flex items-center gap-2">
-                      {appointmentRole === 'ycec' ? <Award className="w-5 h-5 text-teal-600" /> : <UserPlus className="w-5 h-5 text-purple-600" />}
-                      <span>{appointmentRole === 'ycec' ? 'Appoint YCEC Commissioner(s)' : 'Appoint Committee Administrator(s)'}</span>
+                      <UserPlus className="w-5 h-5 text-purple-600" />
+                      <span>Appoint Commissioner(s)</span>
                     </h3>
                     <p className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">
-                      {appointmentRole === 'ycec'
-                        ? 'Select registered voters to appoint as Youth & Community Executive Commission Commissioners (directory roster).'
-                        : 'Select registered voters from the register to appoint as Electoral Committee Officers.'}
+                      Select registered voters from the register to appoint as Electoral Commissioners.
                     </p>
                   </div>
-                  <div className="flex items-center space-x-2">
-                    <div className="flex rounded-xl overflow-hidden border border-gray-200 dark:border-[#1E2E4E] text-xs font-bold">
-                      <button
-                        type="button"
-                        onClick={() => setAppointmentRole('committee')}
-                        className={`px-3 py-1.5 transition-colors ${appointmentRole === 'committee' ? 'bg-purple-600 text-white' : 'bg-white dark:bg-[#16223B] text-gray-700 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-slate-800'}`}
-                      >
-                        Committee Admin
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setAppointmentRole('ycec')}
-                        className={`px-3 py-1.5 transition-colors ${appointmentRole === 'ycec' ? 'bg-teal-600 text-white' : 'bg-white dark:bg-[#16223B] text-gray-700 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-slate-800'}`}
-                      >
-                        YCEC Commissioner
-                      </button>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => { setShowAddCommitteeModal(false); setSelectedVoterIdsForCommittee([]); }}
-                      className="p-1.5 text-gray-400 hover:text-gray-600 rounded-xl"
-                    >
-                      <X className="w-5 h-5" />
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { setShowAddCommissionerModal(false); setSelectedVoterIdsForCommissioners([]); }}
+                    className="p-1.5 text-gray-400 hover:text-gray-600 rounded-xl"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
                 </div>
 
                 {/* Search & Selection helpers */}
@@ -2235,8 +2222,8 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                     <input
                       type="text"
                       placeholder="Search voters by name, RA, or department..."
-                      value={voterSearchForCommittee}
-                      onChange={(e) => setVoterSearchForCommittee(e.target.value)}
+                      value={voterSearchForCommissioners}
+                      onChange={(e) => setVoterSearchForCommissioners(e.target.value)}
                       className="w-full pl-9 pr-3 py-2 rounded-xl border border-gray-200 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] text-xs text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-purple-500"
                     />
                   </div>
@@ -2262,18 +2249,18 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                 {/* Selected count banner */}
                 <div className="flex items-center justify-between px-3 py-1.5 bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 rounded-xl text-xs text-purple-800 dark:text-purple-300">
                   <span className="font-semibold">Selected Officers:</span>
-                  <span className="font-bold font-mono">{selectedVoterIdsForCommittee.length} voter(s) chosen</span>
+                  <span className="font-bold font-mono">{selectedVoterIdsForCommissioners.length} voter(s) chosen</span>
                 </div>
 
                 {/* Voters List with Checkboxes */}
                 <div className="flex-1 overflow-y-auto space-y-2 pr-1 max-h-80">
-                  {filteredVotersForCommittee.length === 0 ? (
+                  {filteredVotersForCommissioners.length === 0 ? (
                     <div className="py-10 text-center text-xs text-gray-400">
                       No eligible voters found matching your search.
                     </div>
                   ) : (
-                    filteredVotersForCommittee.map(v => {
-                      const isSelected = selectedVoterIdsForCommittee.includes(v.id);
+                    filteredVotersForCommissioners.map(v => {
+                      const isSelected = selectedVoterIdsForCommissioners.includes(v.id);
 
                       return (
                         <div
@@ -2313,19 +2300,19 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                 <div className="flex items-center justify-end space-x-2 pt-3 border-t border-gray-100 dark:border-[#1E2E4E]">
                   <button
                     type="button"
-                    onClick={() => { setShowAddCommitteeModal(false); setSelectedVoterIdsForCommittee([]); }}
+                    onClick={() => { setShowAddCommissionerModal(false); setSelectedVoterIdsForCommissioners([]); }}
                     className="px-4 py-2 border rounded-xl text-xs font-semibold"
                   >
                     Cancel
                   </button>
                   <button
                     type="button"
-                    disabled={selectedVoterIdsForCommittee.length === 0 || addingCommittee}
-                    onClick={handleAddCommitteeAdmins}
+                    disabled={selectedVoterIdsForCommissioners.length === 0 || addingCommissioner}
+                    onClick={handleAddCommissioners}
                     className="px-5 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white font-bold rounded-xl text-xs shadow-md transition-all flex items-center space-x-1.5"
                   >
                     <UserCheck className="w-4 h-4" />
-                    <span>Appoint Selected ({selectedVoterIdsForCommittee.length}) as {appointmentRole === 'ycec' ? 'YCEC Commissioner' : 'Committee Admin'}</span>
+                    <span>Appoint Selected ({selectedVoterIdsForCommissioners.length}) as Commissioner</span>
                   </button>
                 </div>
               </div>
@@ -2482,38 +2469,19 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
 
                 <form onSubmit={handleCreateUser} className="space-y-3 text-xs">
                   <div>
-                    <label className="block font-semibold mb-1">First Name *</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. John"
-                      value={regFirstName}
-                      onChange={(e) => setRegFirstName(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-semibold mb-1">Middle Name</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. David"
-                      value={regMiddleName}
-                      onChange={(e) => setRegMiddleName(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-semibold mb-1">Last Name *</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. Smith"
-                      value={regLastName}
-                      onChange={(e) => setRegLastName(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] outline-none"
-                    />
+                    <label className="block font-semibold mb-1">RA Number (Numerical Only) *</label>
+                    <div className="flex items-center rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] overflow-hidden">
+                      <span className="px-3 py-2 bg-gray-200 dark:bg-slate-800 font-mono font-bold">RA-</span>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        required
+                        placeholder="e.g. 5001"
+                        value={regRaNumber}
+                        onChange={(e) => setRegRaNumber(e.target.value.replace(/[^0-9]/g, ''))}
+                        className="flex-1 px-3 py-2 bg-transparent outline-none font-mono"
+                      />
+                    </div>
                   </div>
 
                   <div>
@@ -2524,32 +2492,6 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                       placeholder="voter@domain.com"
                       value={regEmail}
                       onChange={(e) => setRegEmail(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] outline-none"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-semibold mb-1">RA Number (Numerical Only) *</label>
-                    <div className="flex items-center rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] overflow-hidden">
-                      <span className="px-3 py-2 bg-gray-200 dark:bg-slate-800 font-mono font-bold">RA-</span>
-                      <input
-                        type="number"
-                        required
-                        placeholder="e.g. 5001"
-                        value={regRaNumber}
-                        onChange={(e) => setRegRaNumber(e.target.value)}
-                        className="flex-1 px-3 py-2 bg-transparent outline-none font-mono"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block font-semibold mb-1">Department / Faculty</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. Faculty of Arts"
-                      value={regDepartment}
-                      onChange={(e) => setRegDepartment(e.target.value)}
                       className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] outline-none"
                     />
                   </div>
@@ -2566,8 +2508,81 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                     />
                   </div>
 
-<p className="text-[11px] text-gray-400 italic">
-                      The account is created immediately with the password above, and the voter signs in with their RA Number. Users are not accredited during registration — accreditation is granted separately.
+                  <div>
+                    <label className="block font-semibold mb-1">Role</label>
+                    <select
+                      value={regRole}
+                      onChange={(e) => setRegRole(e.target.value as 'voter' | 'contestant' | 'commissioner')}
+                      className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] outline-none"
+                    >
+                      <option value="voter">Voter</option>
+                      <option value="contestant">Contestant</option>
+                      <option value="commissioner">Commissioner</option>
+                    </select>
+                  </div>
+
+                  <details className="rounded-2xl border border-dashed border-gray-300 dark:border-[#1E2E4E] p-3">
+                    <summary className="cursor-pointer font-semibold text-gray-600 dark:text-slate-300">
+                      Optional: names & contacts (voter can complete later)
+                    </summary>
+                    <div className="pt-3 space-y-3">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block font-semibold mb-1">First Name</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. John"
+                            value={regFirstName}
+                            onChange={(e) => setRegFirstName(e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block font-semibold mb-1">Last Name</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. Smith"
+                            value={regLastName}
+                            onChange={(e) => setRegLastName(e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] outline-none"
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block font-semibold mb-1">Middle Name</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. David"
+                          value={regMiddleName}
+                          onChange={(e) => setRegMiddleName(e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-semibold mb-1">Department / Faculty</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Faculty of Arts"
+                          value={regDepartment}
+                          onChange={(e) => setRegDepartment(e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-semibold mb-1">Phone</label>
+                        <input
+                          type="tel"
+                          placeholder="e.g. +234 ..."
+                          value={regPhone}
+                          onChange={(e) => setRegPhone(e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] outline-none"
+                        />
+                      </div>
+                    </div>
+                  </details>
+
+                  <p className="text-[11px] text-gray-400 italic">
+                      Only RA number, email and password are required. The account is created immediately and the voter signs in with their RA number, then completes the rest of their profile from Profile. Users are not accredited during registration — accreditation is granted separately.
                     </p>
 
                   <div className="flex justify-end space-x-2 pt-2">

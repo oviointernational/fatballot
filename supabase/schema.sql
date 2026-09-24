@@ -39,7 +39,7 @@ create or replace function public.is_admin()
 returns boolean language plpgsql stable security definer set search_path = public as
 $$
 begin
-  return exists (select 1 from public.voters where auth_uid::text = auth.uid()::text and role in ('committee', 'superadmin') and coalesce(is_active, true));
+  return exists (select 1 from public.voters where auth_uid::text = auth.uid()::text and role in ('commissioner', 'superadmin') and coalesce(is_active, true));
 end;
 $$;
 
@@ -71,15 +71,15 @@ $$;
 
 -- --------------------------------------------------------------------------
 -- ADMIN ACCOUNT PROVISIONING (registration is admin-managed: voters contact
--- the electoral body, and a Committee Admin or the Superadmin creates the
+-- the electoral body, and a Commissioner or the Superadmin creates the
 -- account with an initial password the voter may change after sign-in).
 -- Both functions are SECURITY DEFINER so they may write auth.users.
 -- --------------------------------------------------------------------------
 create or replace function public.admin_provision_user(
   p_ra_number integer,
   p_email text,
-  p_full_name text,
-  p_password text,
+  p_full_name text default '',
+  p_password text default '',
   p_role text default 'voter',
   p_department text default '',
   p_phone text default ''
@@ -88,19 +88,34 @@ returns jsonb language plpgsql security definer set search_path = public, extens
 $$
 declare
   v_auth_id uuid;
-  v_norm_email text := lower(trim(p_email));
+  v_norm_email text := lower(trim(coalesce(p_email, '')));
   v_first_name text;
   v_last_name text;
-  v_role text := coalesce(nullif(trim(p_role), ''), 'voter');
+  v_role text := coalesce(nullif(trim(coalesce(p_role, '')), ''), 'voter');
 begin
   if not is_admin() then
     raise exception 'Permission denied: admin access required.';
   end if;
-  if v_role not in ('voter', 'contestant', 'committee') then
-    raise exception 'Invalid role. Allowed roles: voter, contestant, committee.';
+  if v_role not in ('voter', 'contestant', 'commissioner') then
+    raise exception 'Invalid role. Allowed roles: voter, contestant, commissioner.';
+  end if;
+  if p_ra_number is null or p_ra_number <= 0 then
+    raise exception 'A valid numeric RA number is required.';
+  end if;
+  if v_norm_email = '' or v_norm_email not like '%@%' then
+    raise exception 'A valid email address is required.';
   end if;
   if char_length(coalesce(p_password, '')) < 6 then
     raise exception 'Initial password must be at least 6 characters.';
+  end if;
+  -- Minimal enrolment: names are optional (voter completes profile later).
+  if coalesce(trim(p_full_name), '') = '' then
+    v_first_name := 'Voter';
+    v_last_name := 'RA-' || p_ra_number::text;
+  else
+    v_first_name := split_part(trim(p_full_name), ' ', 1);
+    v_last_name := nullif(trim(substr(trim(p_full_name), length(v_first_name) + 1)), '');
+    v_last_name := coalesce(v_last_name, v_first_name);
   end if;
   if exists (select 1 from public.voters where ra_number::text = p_ra_number::text) then
     raise exception 'That RA number already belongs to a registered voter.';
@@ -144,11 +159,13 @@ begin
         email_change_token_current = '',
         updated_at = now()
     where id = v_auth_id;
-    delete from auth.refresh_tokens where user_id = v_auth_id;
+    -- Session revocation is best-effort: never let it abort enrolment.
+    begin
+      delete from auth.refresh_tokens where user_id = v_auth_id;
+    exception when others then
+      raise notice 'Skipped refresh-token revocation during enrolment: %', sqlerrm;
+    end;
   end if;
-
-  v_first_name := split_part(trim(p_full_name), ' ', 1);
-  v_last_name := nullif(trim(substr(trim(p_full_name), length(v_first_name) + 1)), '');
 
   insert into public.voters (id, auth_uid, ra_number, email, first_name, middle_name, last_name, role, is_accredited, is_active, department, phone, registered_at)
   values (
@@ -212,7 +229,12 @@ begin
       updated_at = now()
   where id = v_auth_uid;
 
-  delete from auth.refresh_tokens where user_id = v_auth_uid;
+  -- Session revocation is best-effort: never let it abort the password change.
+  begin
+    delete from auth.refresh_tokens where user_id = v_auth_uid;
+  exception when others then
+    raise notice 'Skipped refresh-token revocation during password change: %', sqlerrm;
+  end;
 
   return true;
 end;
@@ -231,12 +253,12 @@ begin
        or new.email is distinct from old.email or new.ra_number is distinct from old.ra_number then
       raise exception 'Identity fields (id, auth_uid, email, RA number) cannot be changed.';
     end if;
-    -- Only the committee may promote roles / change accreditation state.
+    -- Only commissioners may promote roles / change accreditation state.
     if new.role is distinct from old.role or new.is_accredited is distinct from old.is_accredited
        or new.assigned_office_id is distinct from old.assigned_office_id
        or new.is_agent is distinct from old.is_agent then
       if not public.is_admin() then
-        raise exception 'Only the committee may change roles, accreditation, or office assignment.';
+        raise exception 'Only commissioners may change roles, accreditation, or office assignment.';
       end if;
       if old.role = 'superadmin' and not public.is_superadmin() then
         raise exception 'Only the Superadmin may modify a Superadmin';
@@ -248,7 +270,7 @@ end;
 $$;
 
 -- --------------------------------------------------------------------------
--- SETTINGS (single JOSNB row; public read, committee write)
+-- SETTINGS (single JOSNB row; public read, commissioners write)
 -- --------------------------------------------------------------------------
 create table if not exists public.settings (
   id   integer primary key default 1 check (id = 1),
@@ -265,12 +287,12 @@ insert into public.settings (id, data) values (1, '{
   "registrationOpen": true,
   "allowUnaccreditedVoting": false,
   "permissions": {
-    "canRegisterUsers": ["superadmin", "committee"],
-    "canAccreditUsers": ["superadmin", "committee"],
-    "canCreateOffices": ["superadmin", "committee"],
-    "canAssignOffices": ["superadmin", "committee"],
-    "canCreateScreeningCriteria": ["superadmin", "committee"],
-    "canAssignAgents": ["superadmin", "committee"],
+    "canRegisterUsers": ["superadmin", "commissioner"],
+    "canAccreditUsers": ["superadmin", "commissioner"],
+    "canCreateOffices": ["superadmin", "commissioner"],
+    "canAssignOffices": ["superadmin", "commissioner"],
+    "canCreateScreeningCriteria": ["superadmin", "commissioner"],
+    "canAssignAgents": ["superadmin", "commissioner"],
     "canCreateObservers": ["superadmin"]
   }
 }'::jsonb)
@@ -291,7 +313,7 @@ set data = data || '{"allowUnaccreditedVoting": false}'::jsonb
 where id = 1 and not (data ? 'allowUnaccreditedVoting');
 
 -- --------------------------------------------------------------------------
--- REGISTRATION BANK (committee may add eligible voters; the row is consumed
+-- REGISTRATION BANK (commissioners may add eligible voters; the row is consumed
 -- when the voter finishes self-registration)
 -- --------------------------------------------------------------------------
 create table if not exists public.registration_bank (
@@ -314,7 +336,7 @@ create table if not exists public.voters (
   middle_name       text not null default '',
   last_name         text not null,
   role              text not null default 'voter'
-                    check (role in ('voter', 'contestant', 'committee', 'ycec', 'superadmin')),
+                    check (role in ('voter', 'contestant', 'commissioner', 'superadmin')),
   is_accredited     boolean not null default false,
   is_screened       boolean not null default false,
   assigned_office_id text,
@@ -331,11 +353,54 @@ create table if not exists public.voters (
 create index if not exists idx_voters_email ON public.voters (email);
 create index if not exists idx_voters_role ON public.voters (role);
 
--- Keep the role whitelist in sync even when this file is re-run over a DB
--- whose voters table was created by an earlier version of the schema.
+-- Committee -> Commissioner merge: every legacy 'committee' or 'ycec' voter
+-- becomes a 'commissioner', and the whitelist is tightened afterwards, so
+-- re-running this file over an older database never violates the constraint.
+-- Order matters:
+--   1. drop the OLD whitelist (it does not know 'commissioner' yet),
+--   2. pause the identity-guard trigger (it would reject the rewrite because
+--      the SQL Editor has no signed-in admin),
+--   3. rewrite the rows,
+--   4. re-enable the trigger and add the NEW whitelist.
 alter table public.voters drop constraint if exists voters_role_check;
+alter table public.voters disable trigger protect_voter_identity;
+update public.voters set role = 'commissioner'
+where role in ('committee', 'ycec');
+alter table public.voters enable trigger protect_voter_identity;
 alter table public.voters add constraint voters_role_check
-  check (role in ('voter', 'contestant', 'committee', 'ycec', 'superadmin'));
+  check (role in ('voter', 'contestant', 'commissioner', 'superadmin'));
+
+-- Migrate stored permission matrices the same way (only exact quoted tokens,
+-- so prose is untouched).
+update public.settings
+set data = replace(data::text, '"committee"', '"commissioner"')::jsonb
+where id = 1 and data::text like '%"committee"%';
+
+-- Drift guard: databases created before the display-order column existed
+-- lack it, which breaks the backfill below and drag-to-reorder upserts.
+alter table public.ycec_members add column if not exists "order" integer not null default 0;
+
+-- Backfill the commissioners directory: officers merged from legacy roles
+-- (or enrolled directly as commissioners) may have no ycec_members row yet,
+-- which left the dashboard list blank. Idempotent via ON CONFLICT.
+insert into public.ycec_members (id, name, role, email, phone, avatar, tenure, "order")
+select 'ycec-' || v.id,
+       trim(v.first_name || ' ' || coalesce(nullif(v.middle_name, '') || ' ', '') || v.last_name),
+       'Commissioner',
+       v.email,
+       coalesce(v.phone, ''),
+       coalesce(v.avatar, ''),
+       '2026',
+       coalesce((select max("order") from public.ycec_members), 0) + row_number() over (order by v.ra_number)
+from public.voters v
+where v.role = 'commissioner'
+  and not exists (select 1 from public.ycec_members m where m.id = 'ycec-' || v.id)
+on conflict (id) do nothing;
+
+-- Tenure year for the commissioners roster (fills blanks only; keeps any
+-- custom tenure already set).
+update public.ycec_members set tenure = '2026'
+where coalesce(tenure, '') = '';
 
 -- Consume the registration-bank row once a voter account is created.
 create or replace function public.consume_registration_bank()
@@ -371,7 +436,7 @@ create table if not exists public.offices (
 
 insert into public.offices (id, title, "order", description, icon) VALUES
   ('off-pres', 'Executive President', 1, 'Chief Executive Officer presiding over executive meetings and steering council mandates.', 'Crown'),
-  ('off-vp', 'Vice President', 2, 'Principal assistant to the President, supervising committees and policy execution.', 'Shield'),
+  ('off-vp', 'Vice President', 2, 'Principal assistant to the President, supervising commissioners and policy execution.', 'Shield'),
   ('off-sec', 'General Secretary', 3, 'Custodian of council secretariat, minutes, correspondence, and institutional records.', 'FileText'),
   ('off-tres', 'Treasurer & Financial Secretary', 4, 'Manager of budgetary allocations, audits, funds custody, and financial disclosures.', 'Coins'),
   ('off-soc', 'Director of Socials & Welfare', 5, 'Overseeing student wellbeing, community engagements, cultural forums, and welfare.', 'Sparkles'),
@@ -451,7 +516,7 @@ create table if not exists public.ycec_members (
 );
 
 -- NO demo/placeholder commissioner roster: the directory starts empty and is
--- appointed from the Admin -> Committee tab, with a draggable display order.
+-- appointed from the Admin -> Commissioners tab, with a draggable display order.
 delete from public.ycec_members where id in ('ycec-1', 'ycec-2', 'ycec-3', 'ycec-4', 'ycec-5');
 
 -- --------------------------------------------------------------------------
@@ -466,7 +531,7 @@ create table if not exists public.screening_criteria (
 
 insert into public.screening_criteria (id, office_id, title, criteria) VALUES
   ('crit-pres', 'off-pres', 'Executive Presidential Clearance Benchmark', '["Valid constituent matriculation and good financial standing", "Cumulative GPA above minimum threshold (3.0+)", "Zero disciplinary indictment or examination malpractice records", "Public asset and constitutional pledge disclosure", "Certified leadership track record and public debate participation", "Endorsement signatures from at least 25 accredited electorate members"]'::jsonb),
-  ('crit-vp', 'off-vp', 'Vice Presidential Vetting Standards', '["Good academic and administrative standing", "Demonstrated committee coordination experience", "Pledge of executive alignment and non-partisanship", "Endorsement signatures from at least 15 registered constituents"]'::jsonb),
+  ('crit-vp', 'off-vp', 'Vice Presidential Vetting Standards', '["Good academic and administrative standing", "Demonstrated commissioner coordination experience", "Pledge of executive alignment and non-partisanship", "Endorsement signatures from at least 15 registered constituents"]'::jsonb),
   ('crit-sec', 'off-sec', 'General Secretariat Procedural Competence', '["Documentation, archival, and typing proficiency", "No unresolved disciplinary disputes", "Endorsement by at least 10 registered voters"]'::jsonb)
 on conflict (id) do nothing;
 
@@ -711,7 +776,7 @@ create or replace view public.voter_stats as
     (select count(*) from public.offices)                                            as offices_count,
     (select count(*) from public.candidates)                                         as contestants_count,
     (select count(*) from public.votes)                                              as votes_count,
-    (select count(*) from public.ycec_members)                                       as ycec_count;
+    (select count(*) from public.voters where role = 'commissioner' and coalesce(is_active, true)) as ycec_count;
 
 grant select on public.vote_counts, public.office_totals, public.voter_stats, public.my_audit to anon, authenticated, service_role;
 grant execute on function public.my_audit_logs() to authenticated;
@@ -736,6 +801,10 @@ alter table public.audit_log enable row level security;
 -- VOTERS
 drop policy if exists voters_select_all on public.voters;
 create policy voters_select_all on public.voters for select to authenticated using (coalesce(is_active, true));
+-- NOTE: enrolment is admin-managed via admin_provision_user(). The old
+-- registration_bank gate was a prime source of cryptic RLS failures, so the
+-- self-insert policy no longer requires a bank row (the bank table is kept
+-- only for backwards compatibility and may be removed later).
 drop policy if exists voters_insert_self on public.voters;
 create policy voters_insert_self on public.voters for insert to authenticated with check (
   auth_uid::text = auth.uid()::text
@@ -743,8 +812,6 @@ create policy voters_insert_self on public.voters for insert to authenticated wi
   and is_accredited = false
   and is_active = true
   and lower(email) = (select lower(email) from auth.users where id = auth.uid())
-  and exists (select 1 from public.registration_bank b
-              where b.ra_number = ra_number and lower(b.email) = lower(email))
 );
 drop policy if exists voters_update_self on public.voters;
 create policy voters_update_self on public.voters for update to authenticated
@@ -758,7 +825,7 @@ drop policy if exists voters_delete_admin on public.voters;
 create policy voters_delete_admin on public.voters for delete to authenticated
   using (is_admin() and (role <> 'superadmin' or is_superadmin()));
 
--- REGISTRATION BANK (committee only)
+-- REGISTRATION BANK (commissioners only)
 drop policy if exists bank_select_admin on public.registration_bank;
 create policy bank_select_admin on public.registration_bank for select to authenticated using (is_admin());
 drop policy if exists bank_insert_admin on public.registration_bank;
@@ -784,7 +851,7 @@ create policy offices_update_admin on public.offices for update to authenticated
 drop policy if exists offices_delete_admin on public.offices;
 create policy offices_delete_admin on public.offices for delete to authenticated using (is_admin());
 
--- CANDIDATES (public read; committee writes; a contestant may claim their own seat)
+-- CANDIDATES (public read; commissioners write; a contestant may claim their own seat)
 drop policy if exists candidates_select_all on public.candidates;
 create policy candidates_select_all on public.candidates for select to anon, authenticated using (true);
 drop policy if exists candidates_insert_self on public.candidates;
@@ -802,7 +869,7 @@ create policy candidates_update_admin on public.candidates for update to authent
 drop policy if exists candidates_delete_admin on public.candidates;
 create policy candidates_delete_admin on public.candidates for delete to authenticated using (is_admin());
 
--- VOTES (own ballot; committee may inspect for audits; accredited gate in DB)
+-- VOTES (own ballot; commissioners may inspect for audits; accredited gate in DB)
 drop policy if exists votes_select_own on public.votes;
 create policy votes_select_own on public.votes for select to authenticated
   using (exists (select 1 from public.voters v where v.auth_uid::text = auth.uid()::text and v.ra_number::text = voter_ra_number::text)
@@ -833,7 +900,7 @@ create policy votes_update_self on public.votes for update to authenticated
 drop policy if exists votes_delete_admin on public.votes;
 create policy votes_delete_admin on public.votes for delete to authenticated using (is_admin());
 
--- TIMELINE / YCEC (public read; committee write; observers may read for their portal)
+-- TIMELINE / YCEC (public read; commissioners write; observers may read for their portal)
 drop policy if exists timeline_select_all on public.timeline;
 create policy timeline_select_all on public.timeline for select to anon, authenticated using (true);
 drop policy if exists timeline_insert_admin on public.timeline;
@@ -852,7 +919,7 @@ create policy ycec_update_admin on public.ycec_members for update to authenticat
 drop policy if exists ycec_delete_admin on public.ycec_members;
 create policy ycec_delete_admin on public.ycec_members for delete to authenticated using (is_admin());
 
--- SCREENING (public read; committee writes)
+-- SCREENING (public read; commissioners write)
 drop policy if exists scr_select_all on public.screening_criteria;
 create policy scr_select_all on public.screening_criteria for select to anon, authenticated using (true);
 drop policy if exists scr_insert_admin on public.screening_criteria;
@@ -871,7 +938,7 @@ create policy can_scr_update_admin on public.candidate_screenings for update to 
 drop policy if exists can_scr_delete_admin on public.candidate_screenings;
 create policy can_scr_delete_admin on public.candidate_screenings for delete to authenticated using (is_admin());
 
--- AGENTS (committee only read/write)
+-- AGENTS (commissioners only read/write)
 drop policy if exists agents_select_admin on public.agents;
 create policy agents_select_admin on public.agents for select to authenticated using (is_admin());
 drop policy if exists agents_insert_admin on public.agents;
@@ -881,7 +948,7 @@ create policy agents_update_admin on public.agents for update to authenticated u
 drop policy if exists agents_delete_admin on public.agents;
 create policy agents_delete_admin on public.agents for delete to authenticated using (is_admin());
 
--- OBSERVERS (committee manages; tokens are never publicly readable)
+-- OBSERVERS (commissioners manage; tokens are never publicly readable)
 drop policy if exists observers_select_admin on public.observers;
 create policy observers_select_admin on public.observers for select to authenticated using (is_admin());
 drop policy if exists observers_insert_admin on public.observers;
@@ -891,14 +958,14 @@ create policy observers_update_admin on public.observers for update to authentic
 drop policy if exists observers_delete_admin on public.observers;
 create policy observers_delete_admin on public.observers for delete to authenticated using (is_admin());
 
--- AUDIT LOG (committee reads; everyone authenticates through append_audit RPC;
+-- AUDIT LOG (commissioners read; everyone authenticates through append_audit RPC;
 -- the my_audit view exposes your own trail; direct inserts are forbidden)
 drop policy if exists audit_select_admin on public.audit_log;
 create policy audit_select_admin on public.audit_log for select to authenticated using (is_admin());
 drop policy if exists audit_select_own on public.audit_log;
 create policy audit_select_own on public.audit_log for select to authenticated
   using (actor->>'raNumber' = (select ra_number::text from public.voters where auth_uid::text = auth.uid()::text));
--- When the committee enables the public audit log, every signed-in member may read the full chain.
+-- When the commissioners enable the public audit log, every signed-in member may read the full chain.
 drop policy if exists audit_select_public on public.audit_log;
 create policy audit_select_public on public.audit_log for select to authenticated
   using ((select data->>'publicAuditLog' from public.settings where id = 1) = 'true');

@@ -24,7 +24,7 @@ export const RegisterPage: React.FC<{ onNavigate: (page: string) => void }> = ({
           <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-900/50 text-emerald-800 dark:text-emerald-300 flex items-start space-x-3">
             <MailCheck className="w-5 h-5 shrink-0 mt-0.5" />
             <div className="text-xs leading-relaxed space-y-1.5">
-              <p className="font-bold">Registration is handled by the electoral committee.</p>
+              <p className="font-bold">Registration is handled by the electoral commissioners.</p>
               <p>
                 Please contact your Electoral Body or an Admin to register you. They will create
                 your account and give you a sign-in password.
@@ -37,7 +37,7 @@ export const RegisterPage: React.FC<{ onNavigate: (page: string) => void }> = ({
 
           {!settings?.registrationOpen && (
             <div className="p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-900/50 text-xs text-center font-semibold">
-              Registration is currently closed. Check back with the electoral committee.
+              Registration is currently closed. Check back with the electoral commissioners.
             </div>
           )}
 

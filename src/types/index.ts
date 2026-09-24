@@ -29,7 +29,7 @@ export interface Voter {
   middleName?: string;
   lastName: string;
   name?: string;
-  role: 'voter' | 'contestant' | 'committee' | 'ycec' | 'superadmin';
+  role: 'voter' | 'contestant' | 'commissioner' | 'superadmin';
   isAccredited: boolean;
   isScreened?: boolean;
   assignedOfficeId?: string;

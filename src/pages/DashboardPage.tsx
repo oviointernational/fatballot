@@ -87,7 +87,7 @@ export const DashboardPage: React.FC<{ onNavigate: (page: string) => void }> = (
       } else if (type === 'contestants') {
         await exportContestantsPdf(candidates, offices, sessionToken);
       } else if (type === 'ycec') {
-        await exportYCECPdf(ycecList, sessionToken);
+        await exportYCECPdf(commissionerDirectory, sessionToken);
       }
     } catch (err) {
       console.error('PDF export failed', err);
@@ -95,6 +95,32 @@ export const DashboardPage: React.FC<{ onNavigate: (page: string) => void }> = (
       setExporting(null);
     }
   };
+
+  // Commissioners directory: voters with the merged 'commissioner' role are
+  // the source of truth. The legacy ycec_members table only carries display
+  // extras (tenure / manual order), so the list is never blank while
+  // officers exist — even if a directory row was never created.
+  const directoryByVoterId: Record<string, YCECMember> = {};
+  ycecList.forEach(m => {
+    directoryByVoterId[m.id.startsWith('ycec-') ? m.id.slice(5) : m.id] = m;
+  });
+  const commissionerDirectory: YCECMember[] = votersList
+    .filter(v => v.role === 'commissioner')
+    .map((v, i) => {
+      const dir = directoryByVoterId[v.id];
+      const fullName = `${v.firstName}${v.middleName ? ' ' + v.middleName : ''} ${v.lastName}`.replace(/\s+/g, ' ').trim() || `RA-${v.raNumber}`;
+      return {
+        id: dir?.id || `ycec-${v.id}`,
+        name: fullName,
+        role: 'Commissioner',
+        email: v.email || dir?.email || '',
+        phone: v.phone || dir?.phone || '',
+        avatar: v.avatar || dir?.avatar || '',
+        tenure: dir?.tenure || '',
+        order: dir?.order ?? 1000 + i
+      } as YCECMember;
+    })
+    .sort((a, b) => a.order - b.order);
 
   // ----------------------------------------------------
   // REGISTRY DETAIL PAGE VIEW (When a metric card is clicked)
@@ -105,7 +131,7 @@ export const DashboardPage: React.FC<{ onNavigate: (page: string) => void }> = (
       registered: 'Official Registered Voters Registry',
       accredited: 'Certified Accredited Voters Register',
       contestants: 'Certified Contestant Directory',
-      ycec: 'Youth & Electoral Committee (YCEC) Commissioners'
+      ycec: 'YCEC Commissioners'
     };
 
     // Filter items based on search query
@@ -135,8 +161,8 @@ export const DashboardPage: React.FC<{ onNavigate: (page: string) => void }> = (
       c.tagline.toLowerCase().includes(query)
     );
 
-    const filteredYcec = ycecList.filter(m => 
-      m.name.toLowerCase().includes(query) || 
+    const filteredYcec = commissionerDirectory.filter(m =>
+      m.name.toLowerCase().includes(query) ||
       m.role.toLowerCase().includes(query) ||
       m.email.toLowerCase().includes(query)
     );
@@ -306,7 +332,7 @@ export const DashboardPage: React.FC<{ onNavigate: (page: string) => void }> = (
                     ? 'Electoral Agent' 
                     : voter.role === 'contestant' 
                     ? 'Contestant' 
-                    : voter.role === 'committee' 
+                    : voter.role === 'commissioner' 
                     ? 'Electoral Official' 
                     : voter.isAccredited 
                     ? 'Accredited Voter' 
@@ -749,7 +775,7 @@ export const DashboardPage: React.FC<{ onNavigate: (page: string) => void }> = (
             {/* Centralized Number */}
             <div className="my-4 text-center">
               <div className="text-3xl font-extrabold text-gray-900 dark:text-white group-hover:text-purple-600 transition-colors">
-                {stats?.ycecCount || ycecList.length}
+                {stats?.ycecCount || commissionerDirectory.length}
               </div>
               <div className="text-xs font-semibold text-gray-500 dark:text-slate-400 mt-1">
                 YCEC Commissioners

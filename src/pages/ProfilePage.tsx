@@ -62,10 +62,14 @@ function formatEventTitle(block: AuditBlock): string {
       return "Office: Status → Created";
     case "OFFICE_DELETED":
       return "Office: Status → Removed";
+    case "COMMISSIONERS_APPOINTED":
     case "COMMITTEE_ADMINS_APPOINTED":
-      return "Committee: Status → Admins Appointed";
+    case "YCEC_COMMISSIONER_APPOINTED":
+      return "Commissioners: Status → Appointed";
+    case "COMMISSIONER_REMOVED":
     case "COMMITTEE_ADMIN_REMOVED":
-      return "Committee: Status → Admin Removed";
+    case "YCEC_COMMISSIONER_REMOVED":
+      return "Commissioners: Status → Removed";
     case "PDF_EXPORTED":
       return "Export: Status → PDF Generated";
     case "AUTH_ACTIVATION_REQUESTED":
@@ -75,7 +79,7 @@ function formatEventTitle(block: AuditBlock): string {
     case "PASSWORD_CHANGED_BY_ADMIN":
       return "Security: Status → Password Changed by Admin";
     case "PASSWORD_RESET":
-      return "Security: Status → Password Reset by Committee";
+      return "Security: Status → Password Reset by Commissioner";
     case "AUTH_LOGIN_SUCCESS":
       return "Sign-In: Status → Authenticated";
     case "AUTH_LOGOUT":
@@ -115,11 +119,21 @@ function formatOptionalDetail(block: AuditBlock): string | null {
 }
 
 export const ProfilePage: React.FC<{ onNavigate: (page: string) => void }> = ({ onNavigate }) => {
-  const { user, sessionToken, changePassword } = useAuth();
+  const { user, sessionToken, changePassword, updateProfile, refreshProfile } = useAuth();
   const { offices, candidates, myVotes, settings } = useElection();
 
   const [myLogs, setMyLogs] = useState<AuditBlock[]>([]);
   const [ledgerError, setLedgerError] = useState<string | null>(null);
+  const [ledgerLoading, setLedgerLoading] = useState(false);
+  // Complete-your-profile form (minimal enrolment leaves names blank).
+  const [profFirst, setProfFirst] = useState('');
+  const [profMiddle, setProfMiddle] = useState('');
+  const [profLast, setProfLast] = useState('');
+  const [profPhone, setProfPhone] = useState('');
+  const [profDept, setProfDept] = useState('');
+  const [profError, setProfError] = useState<string | null>(null);
+  const [profSuccess, setProfSuccess] = useState<string | null>(null);
+  const [savingProfile, setSavingProfile] = useState(false);
   const [candidateVoters, setCandidateVoters] = useState<{ voter: Voter; timestamp: string }[]>([]);
   const [candidateVotersError, setCandidateVotersError] = useState<string | null>(null);
   const [exportingMyVotes, setExportingMyVotes] = useState(false);
@@ -137,20 +151,50 @@ export const ProfilePage: React.FC<{ onNavigate: (page: string) => void }> = ({ 
 
   useEffect(() => {
     if (!user) return;
+    setProfFirst(user.firstName === 'Voter' ? '' : (user.firstName || ''));
+    setProfMiddle(user.middleName || '');
+    setProfLast((user.lastName || '').startsWith('RA-') ? '' : (user.lastName || ''));
+    setProfPhone(user.phone || '');
+    setProfDept(user.department || '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
-    // Fetch user's personal audit log (my_audit_logs RPC) — newest first
-    supabase
-      .rpc('my_audit_logs')
-      .then(({ data, error }) => {
-        if (error) {
-          console.error(error);
-          setLedgerError(error.message || 'Failed to load ledger.');
-          setMyLogs([]);
-          return;
-        }
-        setLedgerError(null);
-        setMyLogs((data || []).map((row: any, i: number) => mapAuditRow(row, i)));
-      });
+  // Personal ledger with fallbacks so a failure is NEVER silent: the exact
+  // error is always surfaced in the UI instead of an empty list.
+  const fetchMyLedger = async () => {
+    setLedgerLoading(true);
+    setLedgerError(null);
+    try {
+      const rpcRes = await supabase.rpc('my_audit_logs');
+      if (!rpcRes.error) {
+        setMyLogs((rpcRes.data || []).map((row: any, i: number) => mapAuditRow(row, i)));
+        return;
+      }
+      const rpcMsg = rpcRes.error.message || 'my_audit_logs RPC failed.';
+      const viewRes = await supabase.from('my_audit').select('*');
+      if (!viewRes.error) {
+        setMyLogs((viewRes.data || []).map((row: any, i: number) => mapAuditRow(row, i)));
+        setLedgerError(`Ledger RPC unavailable (${rpcMsg}) — showing view fallback.`);
+        return;
+      }
+      const viewMsg = viewRes.error.message || 'my_audit view failed.';
+      setMyLogs([]);
+      setLedgerError(
+        `Ledger unavailable: ${rpcMsg} Fallback also failed: ${viewMsg} ` +
+        `If the schema was updated, re-run supabase/schema.sql (it is idempotent), then press Refresh.`
+      );
+    } catch (e: any) {
+      setMyLogs([]);
+      setLedgerError('Ledger unavailable: ' + (e.message || 'Network error.'));
+    } finally {
+      setLedgerLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!user) return;
+    fetchMyLedger();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
 
     // If contestant, fetch their voters (security definer RPC gates disclosure)
     if (myCandidateProfile) {
@@ -236,6 +280,31 @@ export const ProfilePage: React.FC<{ onNavigate: (page: string) => void }> = ({ 
       setCurrentPw('');
       setNewPw('');
       setConfirmPw('');
+    }
+  };
+
+  const handleSaveProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setProfError(null);
+    setProfSuccess(null);
+    if (!profFirst.trim() || !profLast.trim()) {
+      setProfError('First name and last name are both required.');
+      return;
+    }
+    setSavingProfile(true);
+    const res = await updateProfile({
+      firstName: profFirst.trim(),
+      middleName: profMiddle.trim(),
+      lastName: profLast.trim(),
+      phone: profPhone.trim(),
+      department: profDept.trim()
+    });
+    setSavingProfile(false);
+    if (!res.success) {
+      setProfError(res.message);
+    } else {
+      setProfSuccess(res.message);
+      refreshProfile();
     }
   };
 
@@ -329,6 +398,95 @@ export const ProfilePage: React.FC<{ onNavigate: (page: string) => void }> = ({ 
             </span>
           </div>
         </div>
+      </section>
+
+      {/* 1b. Complete Your Profile (minimal enrolment leaves this blank) */}
+      <section className="bg-white dark:bg-[#0F172A] border border-gray-200 dark:border-[#1E2E4E] rounded-3xl p-6 md:p-8 shadow-sm space-y-4">
+        <div className="border-b border-gray-100 dark:border-[#1E2E4E] pb-4">
+          <h2 className="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
+            <User className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+            <span>Complete Your Profile</span>
+          </h2>
+          <p className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">
+            Enrolment needs only your RA number, email and password — fill in the rest here at any time
+          </p>
+        </div>
+
+        {profError && (
+          <div className="p-3 rounded-2xl bg-red-50 dark:bg-red-950/40 text-red-800 dark:text-red-300 border border-red-300 dark:border-red-900/50 text-xs flex items-center space-x-2">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>{profError}</span>
+          </div>
+        )}
+        {profSuccess && (
+          <div className="p-3 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-900/50 text-xs font-semibold">
+            {profSuccess}
+          </div>
+        )}
+
+        <form onSubmit={handleSaveProfile} className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+          <div>
+            <label className="block font-semibold mb-1 text-gray-700 dark:text-slate-300">First Name *</label>
+            <input
+              type="text"
+              required
+              value={profFirst}
+              onChange={(e) => setProfFirst(e.target.value)}
+              placeholder="e.g. John"
+              className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] text-gray-900 dark:text-white outline-none"
+            />
+          </div>
+          <div>
+            <label className="block font-semibold mb-1 text-gray-700 dark:text-slate-300">Last Name *</label>
+            <input
+              type="text"
+              required
+              value={profLast}
+              onChange={(e) => setProfLast(e.target.value)}
+              placeholder="e.g. Smith"
+              className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] text-gray-900 dark:text-white outline-none"
+            />
+          </div>
+          <div>
+            <label className="block font-semibold mb-1 text-gray-700 dark:text-slate-300">Middle Name</label>
+            <input
+              type="text"
+              value={profMiddle}
+              onChange={(e) => setProfMiddle(e.target.value)}
+              placeholder="Optional"
+              className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] text-gray-900 dark:text-white outline-none"
+            />
+          </div>
+          <div>
+            <label className="block font-semibold mb-1 text-gray-700 dark:text-slate-300">Phone</label>
+            <input
+              type="tel"
+              value={profPhone}
+              onChange={(e) => setProfPhone(e.target.value)}
+              placeholder="e.g. +234 ..."
+              className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] text-gray-900 dark:text-white outline-none"
+            />
+          </div>
+          <div className="sm:col-span-2">
+            <label className="block font-semibold mb-1 text-gray-700 dark:text-slate-300">Department / Faculty</label>
+            <input
+              type="text"
+              value={profDept}
+              onChange={(e) => setProfDept(e.target.value)}
+              placeholder="e.g. Faculty of Arts"
+              className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B] text-gray-900 dark:text-white outline-none"
+            />
+          </div>
+          <div className="sm:col-span-2">
+            <button
+              type="submit"
+              disabled={savingProfile}
+              className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold disabled:opacity-60"
+            >
+              {savingProfile ? 'Saving...' : 'Save Profile'}
+            </button>
+          </div>
+        </form>
       </section>
 
       {/* 2. Account Security: Change Password */}
@@ -525,7 +683,7 @@ export const ProfilePage: React.FC<{ onNavigate: (page: string) => void }> = ({ 
             <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/40 text-amber-800 dark:text-amber-300 text-xs flex items-center space-x-3">
               <AlertCircle className="w-5 h-5 shrink-0" />
               <span>
-                Voter disclosure is currently disabled by the Electoral Committee. Once authorized by Superadmin in settings, backer transparency lists will appear here.
+                Voter disclosure is currently disabled by the Electoral Commissioners. Once authorized by Superadmin in settings, backer transparency lists will appear here.
               </span>
             </div>
           ) : candidateVoters.length === 0 ? (
@@ -576,28 +734,43 @@ export const ProfilePage: React.FC<{ onNavigate: (page: string) => void }> = ({ 
               <span>Personal Security & Activity Ledger</span>
             </h2>
           </div>
-          <span className="text-xs font-mono text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-            <CheckCircle2 className="w-3.5 h-3.5" />
-            <span>Chained Audit Verified</span>
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-mono text-emerald-600 dark:text-emerald-400 hidden sm:flex items-center gap-1">
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              <span>Chained Audit Verified</span>
+            </span>
+            <button
+              onClick={fetchMyLedger}
+              disabled={ledgerLoading}
+              className="px-3 py-1.5 rounded-xl border border-gray-200 dark:border-[#1E2E4E] text-xs font-semibold text-gray-600 dark:text-slate-300 hover:bg-gray-50 dark:hover:bg-[#16223B] disabled:opacity-60"
+            >
+              {ledgerLoading ? 'Loading...' : 'Refresh'}
+            </button>
+          </div>
         </div>
 
+        {ledgerLoading && myLogs.length === 0 && !ledgerError ? (
+          <div className="py-4 text-center text-xs text-gray-400">
+            Loading your activity ledger...
+          </div>
+        ) : null}
         {ledgerError ? (
           <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/40 text-amber-800 dark:text-amber-300 text-xs space-y-1">
-            <p className="font-semibold">Ledger unavailable: {ledgerError}</p>
+            <p className="font-semibold">{ledgerError}</p>
             <p className="text-amber-700 dark:text-amber-400">
-              If the schema was updated, ensure supabase/schema.sql has been re-run (it is idempotent) — then reload this page.
+              If the schema was updated, re-run supabase/schema.sql (it is idempotent) — then press Refresh above.
             </p>
           </div>
-        ) : myLogs.length === 0 ? (
+        ) : null}
+        {!ledgerLoading && !ledgerError && myLogs.length === 0 ? (
           <div className="py-4 text-center text-xs text-gray-400">
             No activity recorded yet. Sign-ins, ballots, password changes, and profile updates will appear here.
           </div>
-        ) : (
+        ) : null}
+        {myLogs.length > 0 && (
           <div className="space-y-0">
             {myLogs
               .slice()
-              .reverse()
               .map((log) => {
                 const isExpanded = expandedLogIndex === log.index;
                 const formattedDate = new Date(log.timestamp).toLocaleString("en-US", {

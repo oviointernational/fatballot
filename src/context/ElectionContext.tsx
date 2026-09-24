@@ -188,7 +188,7 @@ export const ElectionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (error) {
         const msg = error.message || '';
         if (msg.toLowerCase().includes('accredit')) {
-          return { success: false, message: 'Accreditation required to vote. Please see the electoral committee.' };
+          return { success: false, message: 'Accreditation required to vote. Please see the electoral commissioners.' };
         }
         if (msg.toLowerCase().includes('row level security') || msg.toLowerCase().includes('permission')) {
           return { success: false, message: `Your ballot could not be recorded (${msg}).` };

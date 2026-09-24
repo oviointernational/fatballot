@@ -91,7 +91,7 @@ export const LogPage: React.FC<{ onNavigate: (page: string) => void }> = ({ onNa
     setLoading(true);
     try {
       const canViewAll =
-        (user?.role === 'committee' || user?.role === 'superadmin') ||
+        (user?.role === 'commissioner' || user?.role === 'superadmin') ||
         settings.publicAuditLog;
 
       const [logsRes, verifyRes] = await Promise.all([

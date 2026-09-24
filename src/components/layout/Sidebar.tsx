@@ -32,8 +32,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const { settings } = useElection();
 
   const isSuperadmin = user?.role === 'superadmin';
-  const isCommittee = user?.role === 'committee';
-  const canAccessAdmin = isSuperadmin || isCommittee;
+  const isCommissioner = user?.role === 'commissioner';
+  const canAccessAdmin = isSuperadmin || isCommissioner;
 
   const menuItems = [
     {
@@ -66,7 +66,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       icon: ShieldAlert,
       color: 'bg-purple-500/15 text-purple-600 dark:bg-purple-500/20 dark:text-purple-400',
       activeColor: 'bg-purple-600 text-white',
-      badge: isSuperadmin ? 'SuperAdmin' : 'Committee',
+      badge: isSuperadmin ? 'SuperAdmin' : 'Commissioner',
       restricted: false
     }] : []),
     {

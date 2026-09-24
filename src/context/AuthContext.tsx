@@ -26,7 +26,7 @@ interface AuthContextType {
   refreshSetupStatus: () => Promise<void>;
   /** Sign in with an email address (or RA number, which is resolved). */
   login: (identifier: string, password: string) => Promise<AuthResult>;
-  /** Register a voter whose RA + email are in the committee's registration bank. */
+  /** Register a voter whose RA + email are in the commissioners' registration bank. */
   register: (input: RegisterInput) => Promise<AuthResult>;
   /** Supabase password-reset email. */
   forgotPassword: (email: string) => Promise<AuthResult>;
@@ -44,8 +44,6 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
-
-const PENDING_KEY = 'fatballot_pending_registration';
 
 const loadVoterByAuthId = async (authUid: string): Promise<Voter | null> => {
   const { data, error } = await supabase
@@ -96,55 +94,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [user]);
 
-  /** Finishes a sign-up whose voter insert was deferred (email-confirm link). */
-  const completeRegistration = useCallback(async (): Promise<AuthResult> => {
-    const raw = localStorage.getItem(PENDING_KEY);
-    if (!raw) return { success: false, message: 'No pending registration.' };
-    let pending: RegisterInput;
-    try { pending = JSON.parse(raw); } catch { return { success: false, message: 'Pending registration is corrupt.' }; }
-    const cleanRA = pending.ra_number.replace(/^RA-?/i, '').trim();
-    const email = pending.email.trim().toLowerCase();
-    const parts = pending.full_name.trim().split(/\s+/);
-    const firstName = parts[0] || '';
-    const lastName = parts.slice(1).join(' ') || firstName;
-
-    const { data: { user: authUser } } = await supabase.auth.getUser();
-    if (!authUser) return { success: false, message: 'Not signed in.' };
-
-    const { error } = await supabase.from('voters').insert({
-      id: authUser.id,
-      auth_uid: authUser.id,
-      ra_number: parseInt(cleanRA, 10),
-      email,
-      first_name: firstName,
-      last_name: lastName,
-      role: 'voter',
-      registered_at: new Date().toISOString()
-    });
-    if (error) return { success: false, message: 'Registration was not accepted: ' + error.message };
-    localStorage.removeItem(PENDING_KEY);
-    const profile = await loadVoterByAuthId(authUser.id);
-    setUser(profile);
-    return { success: true, message: 'Registered successfully.' };
-  }, []);
-
   const syncFromSession = useCallback(async (session: any) => {
     if (!session?.user) return;
     const profile = await loadVoterByAuthId(session.user.id);
     if (!profile) {
-      const completed = await completeRegistration();
-      if (completed.success) return;
-      // A signed-in auth user with no voter record and nothing pending.
+      // A signed-in auth user with no voter record: enrolment is
+      // admin-managed, so there is nothing to complete client-side.
       await supabase.auth.signOut();
       setUser(null);
       return;
     }
     setUser(profile);
     setSessionToken(session.access_token);
-  }, [completeRegistration]);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
+
+    // Drop any stale deferred-registration payload left by older builds.
+    try { localStorage.removeItem('fatballot_pending_registration'); } catch { /* ignore */ }
 
     (async () => {
       const { data: { session } } = await supabase.auth.getSession();
@@ -212,40 +180,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const register = async (input: RegisterInput): Promise<AuthResult> => {
-    const cleanRA = input.ra_number.replace(/^RA-?/i, '').trim();
-    const email = input.email.trim().toLowerCase();
-    const fullName = input.full_name.trim();
-    if (!cleanRA || !email || !fullName || !input.password) {
-      return { success: false, message: 'Please complete every field.' };
-    }
-    if (input.password.length < 6) {
-      return { success: false, message: 'Password must be at least 6 characters.' };
-    }
-
-    const { data, error } = await supabase.auth.signUp({ email, password: input.password });
-    if (error) {
-      if ((error.message || '').toLowerCase().includes('already registered')) {
-        return { success: false, message: 'That email is already registered. Please sign in instead.' };
-      }
-      return { success: false, message: error.message };
-    }
-
-    localStorage.setItem(PENDING_KEY, JSON.stringify({ ra_number: cleanRA, email, full_name: fullName, password: input.password }));
-
-    if (data.session?.user) {
-      const completed = await completeRegistration();
-      if (!completed.success) {
-        return { success: false, message: completed.message };
-      }
-      const profile = await loadVoterByAuthId(data.session.user.id);
-      if (profile) setUser(profile);
-      return { success: true, message: `Welcome, ${profile?.name || fullName}. You are registered and signed in.` };
-    }
-
+  const register = async (_input: RegisterInput): Promise<AuthResult> => {
+    // Enrolment is admin-managed (RA number + email + password issued by the
+    // commissioners). The old client-side sign-up path caused cryptic RLS
+    // failures, so it is retired: direct callers to the enrolment desk.
     return {
-      success: true,
-      message: 'Almost there! Please click the confirmation link we just emailed you. Your profile completes automatically after that.'
+      success: false,
+      message: 'Registration is handled by the electoral commissioners. Please contact an Admin to enrol your RA number, email and password.'
     };
   };
 
@@ -295,19 +236,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!user) return { success: false, message: 'You need to be signed in.' };
     const { data: { user: authUser } } = await supabase.auth.getUser();
     if (!authUser) return { success: false, message: 'You need to be signed in.' };
+    // Only send fields the voter actually filled in: sending `undefined`
+    // would overwrite names with NULL and violate NOT NULL constraints.
+    const patch: Record<string, string> = {};
+    if (partial.firstName !== undefined && partial.firstName.trim() !== '') patch.first_name = partial.firstName.trim();
+    if (partial.lastName !== undefined && partial.lastName.trim() !== '') patch.last_name = partial.lastName.trim();
+    if (partial.middleName !== undefined) patch.middle_name = (partial.middleName || '').trim();
+    if (partial.phone !== undefined) patch.phone = (partial.phone || '').trim();
+    if (partial.department !== undefined) patch.department = (partial.department || '').trim();
+    if (partial.avatar !== undefined) patch.avatar = partial.avatar || '';
+    if (Object.keys(patch).length === 0) {
+      return { success: false, message: 'Enter at least your first and last name to complete your profile.' };
+    }
+    if ((patch.first_name !== undefined || patch.last_name !== undefined)) {
+      const probeFirst = patch.first_name ?? user.firstName ?? '';
+      const probeLast = patch.last_name ?? user.lastName ?? '';
+      if (!probeFirst.trim() || !probeLast.trim()) {
+        return { success: false, message: 'First name and last name are both required.' };
+      }
+    }
     const { error } = await supabase
       .from('voters')
-      .update({
-        first_name: partial.firstName,
-        last_name: partial.lastName,
-        middle_name: partial.middleName,
-        phone: partial.phone,
-        department: partial.department,
-        avatar: partial.avatar
-      })
+      .update(patch)
       .eq('auth_uid', authUser.id);
-    if (error) return { success: false, message: error.message };
-    await auditSelf('VOTER_UPDATED', { fields: Object.keys(partial) });
+    if (error) return { success: false, message: 'Profile was not saved: ' + error.message };
+    await auditSelf('VOTER_UPDATED', { fields: Object.keys(patch) });
     const profile = await loadVoterByAuthId(authUser.id);
     if (profile) setUser(profile);
     return { success: true, message: 'Profile updated successfully.' };
