@@ -179,8 +179,9 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
   const [regError, setRegError] = useState<string | null>(null);
   const [submittingUser, setSubmittingUser] = useState(false);
 
-  // Reset-password state (user detail modal)
+  // Password-change state (user detail modal)
   const [resetPassword, setResetPassword] = useState('');
+  const [showResetPassword, setShowResetPassword] = useState(true);
   const [resetFeedback, setResetFeedback] = useState<string | null>(null);
   const [resettingPassword, setResettingPassword] = useState(false);
 
@@ -520,7 +521,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
     setEditError(null);
     try {
       if (editEmail.trim().toLowerCase() !== (selectedUserForDetail.email || '').toLowerCase()) {
-        setEditError('The email is the voter\'s sign-in identifier and cannot be changed here. Use the Registration Bank to provision a fresh account if needed.');
+        setEditError('The email is the voter\'s sign-in identifier and cannot be changed here. Enrol a fresh account from the Voters tab if needed.');
         return;
       }
       const res = await supabase
@@ -552,22 +553,29 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
     }
   };
 
-  // Reset a voter's password (self-service email)
-  const handleResetPassword = async () => {
+  // Set a new password for a voter (admin-managed; no self-service email)
+  const handleChangePassword = async () => {
     if (!selectedUserForDetail) return;
+    if (!resetPassword || resetPassword.length < 6) {
+      setResetFeedback('New password must be at least 6 characters.');
+      return;
+    }
     setResettingPassword(true);
     setResetFeedback(null);
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(selectedUserForDetail.email || '');
+      const { error } = await supabase.rpc('admin_change_password', {
+        p_voter_id: selectedUserForDetail.id,
+        p_new_password: resetPassword
+      });
       if (!error) {
-        setResetFeedback('Password reset email sent to the voter. They must click the link in the email and set a new password (self-service).');
+        setResetFeedback('Password saved. Any existing sessions for this voter were revoked — give them the new password securely.');
         setResetPassword('');
-        audit('PASSWORD_RESET_REQUESTED', { raNumber: selectedUserForDetail.raNumber });
+        audit('PASSWORD_CHANGED_BY_ADMIN', { raNumber: selectedUserForDetail.raNumber });
       } else {
         throw error;
       }
     } catch (err: any) {
-      setResetFeedback(err.message || 'Reset failed.');
+      setResetFeedback(err.message || 'Password change failed.');
     } finally {
       setResettingPassword(false);
     }
@@ -604,23 +612,24 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
 
     setSubmittingUser(true);
     try {
-      const { error } = await supabase
-        .from('registration_bank')
-        .insert({
-          id: `bank-${Date.now()}`,
-          ra_number: regRaNumber.trim(),
-          email: regEmail.trim().toLowerCase(),
-          full_name: `${regFirstName.trim()} ${regMiddleName.trim() ? regMiddleName.trim() + ' ' : ''}${regLastName.trim()}`.trim()
-        });
+      const { error } = await supabase.rpc('admin_provision_user', {
+        p_ra_number: parseInt(regRaNumber, 10),
+        p_email: regEmail.trim().toLowerCase(),
+        p_full_name: `${regFirstName.trim()} ${regMiddleName.trim() ? regMiddleName.trim() + ' ' : ''}${regLastName.trim()}`.trim(),
+        p_password: regPassword,
+        p_role: regRole,
+        p_department: regDepartment,
+        p_phone: regPhone
+      });
 
       if (!error) {
         setVoters(prev => prev);
-        audit('AUTH_ACTIVATION_REQUESTED', {
+        audit('VOTER_REGISTERED', {
           raNumber: regRaNumber.trim(),
           email: regEmail.trim().toLowerCase(),
           requestedRole: regRole
         });
-        alert(`${regFirstName.trim()} ${regLastName.trim()} added to the Registration Bank. They can now self-register at the sign-in screen with RA-${regRaNumber.trim()} and their email.`);
+        alert(`${regFirstName.trim()} ${regLastName.trim()} (RA-${regRaNumber.trim()}) enrolled. They can sign in now at the sign-in screen with RA-${regRaNumber.trim()} and the password you just set.`);
         setShowCreateUserModal(false);
         setRegFirstName('');
         setRegMiddleName('');
@@ -632,11 +641,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
         setRegPassword('');
         refreshAll();
       } else {
-        if (error.code === '23505') {
-          setRegError('That RA number or email is already in the Registration Bank.');
-        } else {
-          setRegError(error.message || 'Registration provisioning failed.');
-        }
+        setRegError(error.message || 'Registration provisioning failed.');
       }
     } catch (err: any) {
       setRegError(err.message || 'Network error.');
@@ -2432,10 +2437,9 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                     />
                   </div>
 
-                  <p className="text-[11px] text-gray-400 italic">
-                    Note: Users are not accredited during registration. Accreditation is granted separately.
-                    The voter signs in with their RA Number and this password — give it to them securely.
-                  </p>
+<p className="text-[11px] text-gray-400 italic">
+                      The account is created immediately with the password above, and the voter signs in with their RA Number. Users are not accredited during registration — accreditation is granted separately.
+                    </p>
 
                   <div className="flex justify-end space-x-2 pt-2">
                     <button
@@ -2581,26 +2585,42 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                     </button>
                   </div>
 
-                  {/* Password reset control */}
+                  {/* Password change control (admin-managed) */}
                   <div className="p-3 bg-amber-50/60 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 rounded-2xl space-y-2">
                     <div className="flex items-center space-x-2">
                       <KeyRound className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
                       <div>
-                        <span className="font-bold text-gray-900 dark:text-white block">Password Reset (Self-Service)</span>
+                        <span className="font-bold text-gray-900 dark:text-white block">Change Password</span>
                         <span className="text-[10px] text-gray-500">
-                          A reset link will be sent to the voter's registered email address. They set their own new password.
+                          Set a new password for the voter (e.g. they forgot theirs). Their current sessions are revoked and they sign in with this password. They can change it later in their profile.
                         </span>
                       </div>
+                    </div>
+                    <div className="relative">
+                      <input
+                        type={showResetPassword ? 'text' : 'password'}
+                        value={resetPassword}
+                        onChange={(e) => setResetPassword(e.target.value)}
+                        placeholder="New password (min. 6 characters)"
+                        className="w-full px-3 py-2 pr-16 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-white dark:bg-[#16223B] text-xs outline-none font-mono"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowResetPassword((v) => !v)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-bold text-blue-600 dark:text-blue-400 hover:underline"
+                      >
+                        {showResetPassword ? 'Hide' : 'Show'}
+                      </button>
                     </div>
                     {resetFeedback && (
                       <p className="text-[11px] font-semibold text-gray-700 dark:text-slate-300">{resetFeedback}</p>
                     )}
                     <button
-                      onClick={handleResetPassword}
+                      onClick={handleChangePassword}
                       disabled={resettingPassword}
                       className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold disabled:opacity-60"
                     >
-                      {resettingPassword ? 'Sending...' : 'Send Reset Email'}
+                      {resettingPassword ? 'Saving...' : 'Save New Password'}
                     </button>
                   </div>
                 </div>

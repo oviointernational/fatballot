@@ -38,6 +38,8 @@ function formatEventTitle(block: AuditBlock): string {
       return "Observer: Status → Pass Issued";
     case "SETTINGS_UPDATED":
       return "Governance: Status → Settings Updated";
+    case "PASSWORD_CHANGED_BY_ADMIN":
+      return "Security: Status → Password Changed by Admin";
     case "ELECTION_RESET":
       return "Governance: Status → Election Reset (Ballots Wiped)";
     case "ELECTION_VOIDED":

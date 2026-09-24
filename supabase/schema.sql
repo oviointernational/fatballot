@@ -70,6 +70,137 @@ $$
 $$;
 
 -- --------------------------------------------------------------------------
+-- ADMIN ACCOUNT PROVISIONING (registration is admin-managed: voters contact
+-- the electoral body, and a Committee Admin or the Superadmin creates the
+-- account with an initial password the voter may change after sign-in).
+-- Both functions are SECURITY DEFINER so they may write auth.users.
+-- --------------------------------------------------------------------------
+create or replace function public.admin_provision_user(
+  p_ra_number integer,
+  p_email text,
+  p_full_name text,
+  p_password text,
+  p_role text default 'voter',
+  p_department text default '',
+  p_phone text default ''
+)
+returns jsonb language plpgsql security definer set search_path = public as
+$$
+declare
+  v_auth_id uuid;
+  v_norm_email text := lower(trim(p_email));
+  v_first_name text;
+  v_last_name text;
+  v_role text := coalesce(nullif(trim(p_role), ''), 'voter');
+begin
+  if not is_admin() then
+    raise exception 'Permission denied: admin access required.';
+  end if;
+  if v_role not in ('voter', 'contestant', 'committee') then
+    raise exception 'Invalid role. Allowed roles: voter, contestant, committee.';
+  end if;
+  if char_length(coalesce(p_password, '')) < 6 then
+    raise exception 'Initial password must be at least 6 characters.';
+  end if;
+  if exists (select 1 from public.voters where lower(email) = v_norm_email or ra_number = p_ra_number) then
+    raise exception 'That RA number or email already belongs to a registered voter.';
+  end if;
+  if exists (select 1 from auth.users where lower(email) = v_norm_email) then
+    raise exception 'An account already exists for that email address.';
+  end if;
+
+  v_first_name := split_part(trim(p_full_name), ' ', 1);
+  v_last_name := nullif(trim(substr(trim(p_full_name), length(v_first_name) + 1)), '');
+
+  insert into auth.users (
+    instance_id, id, aud, role, email,
+    encrypted_password, email_confirmed_at,
+    raw_app_meta_data, raw_user_meta_data,
+    created_at, updated_at,
+    confirmation_token, recovery_token,
+    email_change, email_change_token_new, email_change_token_current
+  ) values (
+    '00000000-0000-0000-0000-000000000000',
+    gen_random_uuid(),
+    'authenticated', 'authenticated',
+    v_norm_email,
+    crypt(p_password, gen_salt('bf')),
+    now(),
+    '{"provider":"email","providers":["email"]}',
+    '{}',
+    now(), now(), '', '', '', '', ''
+  )
+  returning id into v_auth_id;
+
+  insert into public.voters (id, auth_uid, ra_number, email, first_name, middle_name, last_name, role, is_accredited, is_active, department, phone, registered_at)
+  values (
+    v_auth_id::text,
+    v_auth_id,
+    p_ra_number,
+    v_norm_email,
+    v_first_name,
+    '',
+    coalesce(v_last_name, v_first_name),
+    v_role,
+    false,
+    true,
+    coalesce(nullif(trim(p_department), ''), ''),
+    coalesce(nullif(trim(p_phone), ''), ''),
+    to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+  );
+
+  return jsonb_build_object(
+    'id', v_auth_id::text,
+    'raNumber', p_ra_number,
+    'email', v_norm_email,
+    'role', v_role
+  );
+end;
+$$;
+
+-- Admin sets a brand-new password for a voter (e.g. forgotten password).
+-- Revokes the voter's existing session tokens so the new password applies
+-- immediately; the voter can change it to their own later in Profile.
+create or replace function public.admin_change_password(p_voter_id text, p_new_password text)
+returns boolean language plpgsql security definer set search_path = public as
+$$
+declare
+  v_auth_uid uuid;
+  v_role text;
+begin
+  if not is_admin() then
+    raise exception 'Permission denied: admin access required.';
+  end if;
+  if char_length(coalesce(p_new_password, '')) < 6 then
+    raise exception 'New password must be at least 6 characters.';
+  end if;
+
+  select auth_uid, role into v_auth_uid, v_role
+  from public.voters where id = p_voter_id;
+  if not found then
+    raise exception 'No voter record matches that user.';
+  end if;
+  if v_role = 'superadmin' and not is_superadmin() then
+    raise exception 'Only the Superadmin may change the Superadmin password.';
+  end if;
+
+  update auth.users
+  set encrypted_password = crypt(p_new_password, gen_salt('bf')),
+      email_confirmed_at = coalesce(email_confirmed_at, now()),
+      recovery_token = '',
+      confirmation_token = '',
+      email_change_token_new = '',
+      email_change_token_current = '',
+      updated_at = now()
+  where id = v_auth_uid;
+
+  delete from auth.refresh_tokens where user_id = v_auth_uid;
+
+  return true;
+end;
+$$;
+
+-- --------------------------------------------------------------------------
 -- IDENTITY GUARD (RLS alone cannot compare old row to proposed row)
 -- The trigger is attached to public.voters AFTER the table is created below.
 -- --------------------------------------------------------------------------
@@ -690,6 +821,8 @@ grant execute on function public.verify_audit_chain() to authenticated;
 grant execute on function public.verify_observer(text) to anon, authenticated;
 grant execute on function public.lookup_email_for_ra(integer) to anon, authenticated;
 grant execute on function public.allows_unaccredited_voting() to anon, authenticated;
+grant execute on function public.admin_provision_user(integer, text, text, text, text, text, text) to authenticated;
+grant execute on function public.admin_change_password(text, text) to authenticated;
 grant execute on function public.voters_for_candidate(text) to authenticated;
 revoke insert, update, delete on public.audit_log from anon, authenticated;
 
@@ -733,5 +866,7 @@ where not exists (select 1 from public.audit_log);
 -- ============================================================================
 -- DONE. Next: set "Confirm email" OFF in Authentication settings, sign in as
 -- the Superadmin (email/password provisioned below; change it at first login),
--- add eligible voters to the Registration Bank so they can self-register.
+-- then enrol voters from the Voters tab: the Admin sets an account + initial
+-- password, and the voter signs in with their RA Number + that password.
+-- Passwords can be reset later via the Admin's "Change Password" control.
 -- ============================================================================

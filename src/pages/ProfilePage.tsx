@@ -72,6 +72,8 @@ function formatEventTitle(block: AuditBlock): string {
       return "Sign-In: Status → Account Activated";
     case "PASSWORD_CHANGED":
       return "Security: Status → Password Changed";
+    case "PASSWORD_CHANGED_BY_ADMIN":
+      return "Security: Status → Password Changed by Admin";
     case "PASSWORD_RESET":
       return "Security: Status → Password Reset by Committee";
     case "AUTH_LOGIN_SUCCESS":
