@@ -15,6 +15,7 @@ import { APP_VERSION } from '../../lib/version';
 
 interface SidebarProps {
   isOpen: boolean;
+  mobile?: boolean;
   currentPage: string;
   onNavigate: (page: string) => void;
   onCloseMobile?: () => void;
@@ -22,6 +23,7 @@ interface SidebarProps {
 
 export const Sidebar: React.FC<SidebarProps> = ({
   isOpen,
+  mobile = false,
   currentPage,
   onNavigate,
   onCloseMobile
@@ -82,7 +84,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside
-      className="w-[20%] min-w-[240px] max-w-[320px] h-full shrink-0 bg-white dark:bg-[#0B132B] border-r border-gray-100 dark:border-[#1E2E4E]/60 overflow-y-auto flex flex-col justify-between p-4 z-30 transition-all duration-300 select-none shadow-xs"
+      className={`${mobile
+        ? "fixed top-16 bottom-0 left-0 z-40 shadow-2xl"
+        : "w-[20%] min-w-[240px] max-w-[320px] shrink-0 shadow-xs"
+      } h-full bg-white dark:bg-[#0B132B] border-r border-gray-100 dark:border-[#1E2E4E]/60 overflow-y-auto flex flex-col justify-between p-4 transition-all duration-300 select-none`}
       aria-label="Sidebar Navigation"
     >
       <div className="space-y-6">

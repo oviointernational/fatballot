@@ -119,6 +119,7 @@ export const ProfilePage: React.FC<{ onNavigate: (page: string) => void }> = ({ 
   const { offices, candidates, myVotes, settings } = useElection();
 
   const [myLogs, setMyLogs] = useState<AuditBlock[]>([]);
+  const [ledgerError, setLedgerError] = useState<string | null>(null);
   const [candidateVoters, setCandidateVoters] = useState<{ voter: Voter; timestamp: string }[]>([]);
   const [candidateVotersError, setCandidateVotersError] = useState<string | null>(null);
   const [exportingMyVotes, setExportingMyVotes] = useState(false);
@@ -137,12 +138,17 @@ export const ProfilePage: React.FC<{ onNavigate: (page: string) => void }> = ({ 
   useEffect(() => {
     if (!user) return;
 
-    // Fetch user's personal audit log (my_audit view) — newest first
+    // Fetch user's personal audit log (my_audit_logs RPC) — newest first
     supabase
-      .from('my_audit')
-      .select('*')
+      .rpc('my_audit_logs')
       .then(({ data, error }) => {
-        if (error) { console.error(error); return; }
+        if (error) {
+          console.error(error);
+          setLedgerError(error.message || 'Failed to load ledger.');
+          setMyLogs([]);
+          return;
+        }
+        setLedgerError(null);
         setMyLogs((data || []).map((row: any, i: number) => mapAuditRow(row, i)));
       });
 
@@ -579,9 +585,16 @@ export const ProfilePage: React.FC<{ onNavigate: (page: string) => void }> = ({ 
           </span>
         </div>
 
-        {myLogs.length === 0 ? (
+        {ledgerError ? (
+          <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/40 text-amber-800 dark:text-amber-300 text-xs space-y-1">
+            <p className="font-semibold">Ledger unavailable: {ledgerError}</p>
+            <p className="text-amber-700 dark:text-amber-400">
+              If the schema was updated, ensure supabase/schema.sql has been re-run (it is idempotent) — then reload this page.
+            </p>
+          </div>
+        ) : myLogs.length === 0 ? (
           <div className="py-4 text-center text-xs text-gray-400">
-            No logged activity recorded for this session yet.
+            No activity recorded yet. Sign-ins, ballots, password changes, and profile updates will appear here.
           </div>
         ) : (
           <div className="space-y-0">

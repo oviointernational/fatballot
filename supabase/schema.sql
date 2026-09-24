@@ -575,6 +575,27 @@ create or replace view public.my_audit as
      or al.details->>'voterRaNumber' = me.ra
   order by al.id desc;
 
+-- Guaranteed-execute path for the Personal Security & Activity Ledger (the
+-- client calls this RPC instead of selecting the view, so RLS/grant setups
+-- on the view can't silently produce an empty ledger).
+create or replace function public.my_audit_logs()
+returns setof public.audit_log
+language sql stable security definer set search_path = public as
+$$
+  with me as (
+    select id, ra_number::text as ra
+    from public.voters
+    where auth_uid = auth.uid()
+  )
+  select al.*
+  from public.audit_log al, me
+  where al.actor->>'raNumber'      = me.ra
+     or al.details->>'raNumber'    = me.ra
+     or al.details->>'voterId'     = me.id
+     or al.details->>'voterRaNumber' = me.ra
+  order by al.id desc;
+$$;
+
 -- Contestant: "who voted for you" — gated by settings + ownership.
 create or replace function public.voters_for_candidate(p_candidate_id text)
 returns table (ra_number integer, full_name text, department text)
@@ -627,6 +648,7 @@ create or replace view public.voter_stats as
     (select count(*) from public.ycec_members)                                       as ycec_count;
 
 grant select on public.vote_counts, public.office_totals, public.voter_stats, public.my_audit to anon, authenticated, service_role;
+grant execute on function public.my_audit_logs() to authenticated;
 
 -- --------------------------------------------------------------------------
 -- ROW LEVEL SECURITY

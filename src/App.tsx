@@ -43,15 +43,30 @@ function initialPage(): string {
 const AppContent: React.FC = () => {
   const { user, isLoading } = useAuth();
   const [currentPage, setCurrentPage] = useState<string>(initialPage);
-  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
+  const [viewport, setViewport] = useState<{ isMobile: boolean; sidebarOpen: boolean }>(() => {
+    const wide = typeof window !== 'undefined' && window.innerWidth >= 1024;
+    return { isMobile: !wide, sidebarOpen: wide };
+  });
+
+  // Desktop keeps the sidebar open by default; mobile (and below) collapses
+  // it by default so the app content gets full screen width.
+  useEffect(() => {
+    const onResize = () => {
+      const wide = window.innerWidth >= 1024;
+      setViewport({ isMobile: !wide, sidebarOpen: wide });
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   const handleNavigate = (page: string) => {
     setCurrentPage(page);
+    setViewport(v => (v.isMobile && v.sidebarOpen ? { ...v, sidebarOpen: false } : v));
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const toggleSidebar = () => {
-    setIsSidebarOpen(prev => !prev);
+    setViewport(v => ({ ...v, sidebarOpen: !v.sidebarOpen }));
   };
 
   // Signed-in users are never parked on an auth screen; signed-out users
@@ -79,7 +94,7 @@ const AppContent: React.FC = () => {
     <div className="h-screen w-screen bg-gray-50 text-gray-900 dark:bg-[#080C15] dark:text-slate-100 transition-colors flex flex-col overflow-hidden">
       {/* Header - borderless */}
       <Header
-        isSidebarOpen={isSidebarOpen}
+        isSidebarOpen={viewport.sidebarOpen}
         onToggleSidebar={toggleSidebar}
         onNavigate={handleNavigate}
         currentPage={currentPage}
@@ -87,11 +102,22 @@ const AppContent: React.FC = () => {
 
       {/* Body Layout */}
       <div className="flex flex-1 overflow-hidden relative">
-        {/* 20% width independently scrollable and collapsible side menu (Fixed in place) */}
+        {/* Mobile drawer backdrop */}
+        {viewport.isMobile && viewport.sidebarOpen && (
+          <div
+            className="absolute inset-0 bg-black/40 backdrop-blur-sm z-30 lg:hidden"
+            onClick={toggleSidebar}
+            aria-hidden="true"
+          />
+        )}
+
+        {/* 20% width independently scrollable and collapsible side menu (overlay drawer on mobile) */}
         <Sidebar
-          isOpen={isSidebarOpen}
+          isOpen={viewport.sidebarOpen}
+          mobile={viewport.isMobile}
           currentPage={currentPage}
           onNavigate={handleNavigate}
+          onCloseMobile={viewport.isMobile ? toggleSidebar : undefined}
         />
 
         {/* Dynamic Main Workspace Container with its own independent scroll */}
