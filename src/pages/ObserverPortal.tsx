@@ -17,6 +17,7 @@ import { OfficeLiveResult, SystemStats, TimelineItem } from "../types";
 import { supabase } from "../lib/supabase";
 import { fetchLiveResults, fetchSystemStats } from "../lib/liveResults";
 import { mapTimelineRow } from "../lib/mappers";
+import { Avatar } from "../components/common/Avatar";
 
 interface ObserverPortalProps {
   token: string;
@@ -249,13 +250,11 @@ const fetchData = async () => {
                     <div key={c.candidateId}>
                       <div className="flex items-center justify-between mb-1 text-xs">
                         <div className="flex items-center space-x-2">
-                          {c.avatar ? (
-                            <img src={c.avatar} alt={c.candidateName} className="w-7 h-7 rounded-full object-cover border border-gray-200 dark:border-[#1E2E4E]" />
-                          ) : (
-                            <div className="w-7 h-7 rounded-full bg-blue-100 dark:bg-blue-950 flex items-center justify-center text-[10px] font-bold text-blue-600 dark:text-blue-400">
-                              {c.candidateName.charAt(0)}
-                            </div>
-                          )}
+                          <Avatar
+                            src={c.avatar}
+                            alt={c.candidateName}
+                            className="w-7 h-7 rounded-full object-cover border border-gray-200 dark:border-[#1E2E4E]"
+                          />
                           <span className="font-semibold text-gray-900 dark:text-white">{c.candidateName}</span>
                         </div>
                         <span className="font-mono font-bold text-gray-900 dark:text-white">{c.percentage.toFixed(1)}% <span className="text-gray-400 font-normal">({c.count})</span></span>

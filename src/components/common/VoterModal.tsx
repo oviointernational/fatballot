@@ -1,6 +1,7 @@
 import React from 'react';
 import { X, User, Mail, Hash, Building2, CheckCircle2, AlertCircle, Shield } from 'lucide-react';
 import { Voter } from '../../types';
+import { Avatar } from './Avatar';
 
 interface VoterModalProps {
   voter: Voter | null;
@@ -20,11 +21,7 @@ export const VoterModal: React.FC<VoterModalProps> = ({ voter, onClose }) => {
         <div className="p-5 bg-gradient-to-r from-blue-700 to-indigo-800 text-white flex items-center justify-between">
           <div className="flex items-center space-x-3">
             <div className="w-12 h-12 rounded-full bg-white/20 text-white flex items-center justify-center text-lg font-bold ring-2 ring-white/30">
-              {voter.avatar ? (
-                <img src={voter.avatar} alt={voter.firstName} className="w-full h-full rounded-full object-cover" />
-              ) : (
-                `${voter.firstName[0]}${voter.lastName[0]}`
-              )}
+              <Avatar src={voter.avatar} alt={voter.firstName} className="w-full h-full rounded-full object-cover" />
             </div>
             <div>
               <h3 className="font-bold text-base leading-tight">

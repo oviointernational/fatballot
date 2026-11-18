@@ -54,6 +54,7 @@ import {
   TimelineItem,
   YCECMember
 } from '../types';
+import { Avatar } from '../components/common/Avatar';
 
 type AdminTab = 'access' | 'commissioners' | 'users' | 'offices' | 'agents' | 'observers' | 'timeline';
 
@@ -2185,13 +2186,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                           <tr key={admin.id} className="hover:bg-gray-50/50 dark:hover:bg-[#16223B]/50 transition-colors">
                             <td className="py-3.5 px-4">
                               <div className="flex items-center space-x-3">
-                                {admin.avatar ? (
-                                  <img src={admin.avatar} alt={admin.firstName} className="w-8 h-8 rounded-full object-cover" />
-                                ) : (
-                                  <div className="w-8 h-8 rounded-full bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300 font-bold flex items-center justify-center text-xs">
-                                    {admin.firstName.charAt(0)}
-                                  </div>
-                                )}
+                                <Avatar src={admin.avatar} alt={admin.firstName} className="w-8 h-8 rounded-full object-cover" />
                                 <div>
                                   <p className="font-bold text-gray-900 dark:text-white text-xs">
                                     {admin.firstName} {admin.middleName ? admin.middleName + ' ' : ''}{admin.lastName}

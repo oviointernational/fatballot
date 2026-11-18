@@ -23,6 +23,7 @@ import { exportMyVotesPdf, exportCandidateVotersPdf } from '../utils/pdfGenerato
 import { supabase } from '../lib/supabase';
 import { mapAuditRow } from '../lib/mappers';
 import { AuditBlock, CastVote, Voter } from '../types';
+import { Avatar } from '../components/common/Avatar';
 
 function formatEventTitle(block: AuditBlock): string {
   switch (block.eventType) {
@@ -341,18 +342,11 @@ export const ProfilePage: React.FC<{ onNavigate: (page: string) => void }> = ({ 
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
           <div className="flex items-center space-x-5">
             <div className="relative">
-              {user.avatar ? (
-                <img
-                  src={user.avatar}
-                  alt={user.firstName}
-                  className="w-20 h-20 rounded-full object-cover ring-4 ring-blue-500/20 shadow-md"
-                />
-              ) : (
-                <div className="w-20 h-20 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center font-bold text-2xl shadow-md">
-                  {user.firstName[0]}
-                  {user.lastName[0]}
-                </div>
-              )}
+              <Avatar
+                src={user.avatar}
+                alt={user.firstName}
+                className="w-20 h-20 rounded-full object-cover ring-4 ring-blue-500/20 shadow-md"
+              />
               {user.isAccredited && (
                 <div
                   className="absolute bottom-0 right-0 w-6 h-6 bg-emerald-500 text-white rounded-full flex items-center justify-center text-xs shadow-sm ring-2 ring-white dark:ring-[#0F172A]"

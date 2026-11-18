@@ -22,6 +22,7 @@ import { useElection } from '../context/ElectionContext';
 import { useAuth } from '../context/AuthContext';
 import { CountdownTimer } from '../components/common/CountdownTimer';
 import { CandidateModal } from '../components/common/CandidateModal';
+import { Avatar } from '../components/common/Avatar';
 import { CandidateProfile, Office } from '../types';
 
 // Map icon names to Lucide icons
@@ -306,7 +307,7 @@ export const VotingPage: React.FC<{ onNavigate: (page: string) => void }> = ({ o
                       <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
                         {/* Contestant Image, Name, Position, View Icon */}
                         <div className="flex items-start md:items-center space-x-5">
-                          <img
+                          <Avatar
                             src={candidate.avatar}
                             alt={candidate.name}
                             className="w-24 h-24 rounded-full object-cover ring-4 ring-white/50 dark:ring-slate-700/50 shadow-md shrink-0"
@@ -399,7 +400,7 @@ export const VotingPage: React.FC<{ onNavigate: (page: string) => void }> = ({ o
                       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                         {/* Contestant details: Image, Name, Position, Small View Icon */}
                         <div className="flex items-center space-x-4">
-                          <img
+                          <Avatar
                             src={candidate.avatar}
                             alt={candidate.name}
                             className="w-16 h-16 rounded-full object-cover ring-2 ring-white/60 dark:ring-slate-700 shadow-sm shrink-0"
@@ -508,7 +509,7 @@ export const VotingPage: React.FC<{ onNavigate: (page: string) => void }> = ({ o
                       return (
                         <div key={cand.candidateId} className="space-y-3">
                           <div className="flex items-center space-x-2.5">
-                            <img
+                            <Avatar
                               src={cand.avatar}
                               alt={cand.candidateName}
                               className="w-8 h-8 rounded-full object-cover"

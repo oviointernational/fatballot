@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { CandidateProfile, Office } from '../../types';
+import { Avatar } from './Avatar';
 import { X, Award, Briefcase, Compass, History, Mail, UserCheck } from 'lucide-react';
 
 interface CandidateModalProps {
@@ -30,7 +31,7 @@ export const CandidateModal: React.FC<CandidateModalProps> = ({
         {/* Header with Candidate Banner */}
         <div className="relative p-6 bg-gradient-to-r from-blue-700 via-indigo-700 to-slate-900 text-white flex items-start justify-between">
           <div className="flex items-center space-x-4">
-            <img
+            <Avatar
               src={candidate.avatar}
               alt={candidate.name}
               className="w-20 h-20 rounded-full object-cover border-4 border-white/30 shadow-md ring-2 ring-white/10"

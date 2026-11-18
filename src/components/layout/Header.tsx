@@ -3,6 +3,7 @@ import { PanelLeftClose, PanelLeftOpen, Sun, Moon, User, LogOut, Shield, Chevron
 import { useTheme } from '../../context/ThemeContext';
 import { useAuth } from '../../context/AuthContext';
 import { useElection } from '../../context/ElectionContext';
+import { Avatar } from '../common/Avatar';
 
 interface HeaderProps {
   isSidebarOpen?: boolean;
@@ -107,18 +108,11 @@ export const Header: React.FC<HeaderProps> = ({ isSidebarOpen = true, onToggleSi
                 className="flex items-center space-x-2.5 p-1.5 pl-2 pr-3 rounded-xl hover:bg-gray-100 dark:hover:bg-[#16223B] border border-transparent hover:border-gray-200 dark:hover:border-[#1E2E4E] transition-all focus:outline-none"
               >
                 <div className="relative">
-                  {user.avatar ? (
-                    <img
-                      src={user.avatar}
-                      alt={user.firstName}
-                      className="w-8 h-8 rounded-full object-cover ring-2 ring-blue-500/40"
-                    />
-                  ) : (
-                    <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center font-bold text-xs shadow-sm">
-                      {user.firstName[0]}
-                      {user.lastName[0]}
-                    </div>
-                  )}
+                  <Avatar
+                    src={user.avatar}
+                    alt={user.firstName}
+                    className="w-8 h-8 rounded-full object-cover ring-2 ring-blue-500/40 shadow-sm"
+                  />
                   {user.isAccredited && (
                     <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-500 border-2 border-white dark:border-[#0B132B] rounded-full" title="Accredited Voter" />
                   )}

@@ -32,6 +32,7 @@ import {
 } from '../utils/pdfGenerator';
 import { CandidateModal } from '../components/common/CandidateModal';
 import { VoterModal } from '../components/common/VoterModal';
+import { Avatar } from '../components/common/Avatar';
 import { CandidateProfile, TimelineItem, Voter, YCECMember, Office } from '../types';
 import { supabase } from '../lib/supabase';
 import { mapVoterRow, mapTimelineRow, mapYCECRow } from '../lib/mappers';
@@ -254,7 +255,7 @@ export const DashboardPage: React.FC<{ onNavigate: (page: string) => void }> = (
                   >
                     <div className="space-y-3">
                       <div className="flex items-center space-x-3.5">
-                        <img
+                        <Avatar
                           src={candidate.avatar}
                           alt={candidate.name}
                           className="w-14 h-14 rounded-full object-cover ring-2 ring-blue-500/20 group-hover:scale-105 transition-transform"
@@ -346,12 +347,8 @@ export const DashboardPage: React.FC<{ onNavigate: (page: string) => void }> = (
                     >
                       <div className="space-y-3">
                         <div className="flex items-center space-x-3.5">
-                          <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 text-white font-bold flex items-center justify-center text-sm shadow-sm shrink-0">
-                            {voter.avatar ? (
-                              <img src={voter.avatar} alt={voter.firstName} className="w-full h-full rounded-full object-cover" />
-                            ) : (
-                              `${voter.firstName[0]}${voter.lastName[0]}`
-                            )}
+                          <div className="w-12 h-12 rounded-full text-white font-bold flex items-center justify-center text-sm shadow-sm shrink-0">
+                            <Avatar src={voter.avatar} alt={voter.firstName} className="w-full h-full rounded-full object-cover" />
                           </div>
                           <div className="min-w-0 flex-1">
                             <h4 className="text-sm font-bold text-gray-900 dark:text-white truncate">
@@ -482,7 +479,7 @@ export const DashboardPage: React.FC<{ onNavigate: (page: string) => void }> = (
                 className="bg-white dark:bg-[#0F172A] border border-gray-200 dark:border-[#1E2E4E] rounded-3xl p-5 shadow-sm space-y-3"
               >
                 <div className="flex items-center space-x-3.5">
-                  <img
+                  <Avatar
                     src={member.avatar}
                     alt={member.name}
                     className="w-12 h-12 rounded-full object-cover ring-2 ring-purple-500/20"
