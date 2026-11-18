@@ -258,13 +258,14 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
 
   const fetchAllData = async () => {
     try {
-      const [votersRes, agentsRes, obsRes, critRes, timeRes, ycecRes] = await Promise.all([
+      const [votersRes, agentsRes, obsRes, critRes, timeRes, ycecRes, candRes] = await Promise.all([
         supabase.from('voters').select('*').order('ra_number'),
         supabase.from('agents').select('*').order('assigned_at', { ascending: false }),
         supabase.from('observers').select('*'),
         supabase.from('screening_criteria').select('*'),
         supabase.from('timeline').select('*').order('"order"'),
-        supabase.from('ycec_members').select('*').order('"order"')
+        supabase.from('ycec_members').select('*').order('"order"'),
+        supabase.from('candidates').select('*').order('order')
       ]);
 
       if (!votersRes.error) setVoters((votersRes.data || []).map(mapVoterRow));
@@ -272,6 +273,11 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
       if (!obsRes.error) setObservers((obsRes.data || []).map(mapObserverRow));
       if (!critRes.error) setScreeningCriteria((critRes.data || []).map(mapScreeningCriteriaRow));
       if (!timeRes.error) setTimelineItems((timeRes.data || []).map(mapTimelineRow));
+      if (!candRes.error) {
+        // Candidates are owned by ElectionContext; refresh context so the
+        // contestant directory and screening dropdowns see new assignments.
+        void refreshAll();
+      }
       const directoryRows = (!ycecRes.error ? (ycecRes.data || []) : []).map(mapYCECRow);
       if (!ycecRes.error) setYcecMembers(directoryRows);
       const officerList = (votersRes.data || []).map(mapVoterRow).filter(v => v.role === 'commissioner');
@@ -859,10 +865,16 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
       const voter = voters.find(v => v.id === voterId);
       if (!voter) { setAssignOfficeError('Voter not found.'); return; }
 
-      // Upsert candidate row
+      // Upsert candidate row: create if new, update office if reassigned
       const existingCand = candidates.find(c => c.raNumber === voter.raNumber);
-      if (!existingCand) {
-        await supabase.from('candidates').insert({
+      if (existingCand) {
+        const { error: updError } = await supabase
+          .from('candidates')
+          .update({ office_id: officeId })
+          .eq('id', existingCand.id);
+        if (updError) throw updError;
+      } else {
+        const { error: insError } = await supabase.from('candidates').insert({
           id: `cand-${Date.now()}`,
           office_id: officeId,
           voter_id: voterId,
@@ -876,6 +888,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
           achievements: [],
           contact_email: voter.email
         });
+        if (insError) throw insError;
       }
 
       const res = await supabase
