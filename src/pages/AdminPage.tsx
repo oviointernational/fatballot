@@ -41,7 +41,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { useElection } from '../context/ElectionContext';
 import { supabase } from '../lib/supabase';
-import { mapVoterRow, mapAgentRow, mapObserverRow, mapTimelineRow, mapScreeningCriteriaRow, mapCandidateScreeningRow, mapYCECRow } from '../lib/mappers';
+import { mapVoterRow, mapAgentRow, mapObserverRow, mapTimelineRow, mapScreeningCriteriaRow, mapCandidateScreeningRow, mapCandidateRow, mapYCECRow } from '../lib/mappers';
 import { 
   SiteSettings, 
   Voter, 
@@ -97,6 +97,11 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
   const [agents, setAgents] = useState<ElectionAgent[]>([]);
   const [observers, setObservers] = useState<Observer[]>([]);
   const [screeningCriteria, setScreeningCriteria] = useState<ScreeningCriteria[]>([]);
+
+  // Local candidate mirror so the contestant directory, office counts and
+  // screening dropdown always reflect assignments immediately — even if
+  // ElectionContext's realtime/polling refresh lags behind.
+  const [localCandidates, setLocalCandidates] = useState<CandidateProfile[]>([]);
 
   // Tab 2: Commissioners state (single merged officers registry)
   const [commissioners, setCommissioners] = useState<Voter[]>([]);
@@ -274,8 +279,10 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
       if (!critRes.error) setScreeningCriteria((critRes.data || []).map(mapScreeningCriteriaRow));
       if (!timeRes.error) setTimelineItems((timeRes.data || []).map(mapTimelineRow));
       if (!candRes.error) {
+        const mapped = ((candRes.data as any[]) || []).map(mapCandidateRow);
+        setLocalCandidates(mapped);
         // Candidates are owned by ElectionContext; refresh context so the
-        // contestant directory and screening dropdowns see new assignments.
+        // dashboard and voter-facing screens see new assignments immediately.
         void refreshAll();
       }
       const directoryRows = (!ycecRes.error ? (ycecRes.data || []) : []).map(mapYCECRow);
@@ -354,7 +361,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
   // Contestants (candidates) drag-to-reorder within an office
   const handleContestantReorder = async (officeId: string, toIndex: number) => {
     if (!candidateDrag || candidateDrag.officeId !== officeId || candidateDrag.index === toIndex) { setCandidateDrag(null); return; }
-    const sorted = candidates.filter(c => c.officeId === officeId).sort((a, b) => a.order - b.order);
+    const sorted = localCandidates.filter(c => c.officeId === officeId).sort((a, b) => a.order - b.order);
     const next = reorderArray(sorted, candidateDrag.index, toIndex);
     const rows = next.map((c, i) => ({ id: c.id, order: i + 1 }));
     setCandidateDrag(null);
@@ -866,7 +873,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
       if (!voter) { setAssignOfficeError('Voter not found.'); return; }
 
       // Upsert candidate row: create if new, update office if reassigned
-      const existingCand = candidates.find(c => c.raNumber === voter.raNumber);
+      const existingCand = localCandidates.find(c => c.raNumber === voter.raNumber);
       if (existingCand) {
         const { error: updError } = await supabase
           .from('candidates')
@@ -901,8 +908,37 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
       if (!res.error && res.data) {
         const updated = mapVoterRow(res.data);
         setVoters(prev => prev.map(v => v.id === updated.id ? updated : v));
+
+        // Rebuild local candidate mirror so the office count, contestant
+        // directory and screening dropdown reflect this assignment instantly.
+        const newCand: CandidateProfile = {
+          id: `cand-${Date.now()}`,
+          officeId: officeId,
+          name: `${voter.firstName} ${voter.middleName ? voter.middleName + ' ' : ''}${voter.lastName}`,
+          raNumber: voter.raNumber,
+          avatar: voter.avatar || '',
+          tagline: '',
+          vision: '',
+          antecedent: [],
+          currentOffices: [],
+          achievements: [],
+          contactEmail: voter.email,
+          order: 0
+        };
+        setLocalCandidates(prev => {
+          const existing = prev.findIndex(c => c.raNumber === voter.raNumber);
+          if (existing >= 0) {
+            const next = [...prev];
+            next[existing] = { ...next[existing], officeId: officeId };
+            return next;
+          }
+          return [...prev, newCand];
+        });
+
+        await refreshAll();
         audit('OFFICE_ASSIGNED', { voterId, officeId, raNumber: voter.raNumber });
-        refreshAll();
+        setAssignOfficeError(null);
+        alert(`${voter.firstName} ${voter.lastName} assigned as contestant for ${officeId}.`);
       } else {
         setAssignOfficeError(res.error?.message || 'Assignment failed.');
       }
@@ -968,7 +1004,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
         // If a contestant of this office is already chosen, load the criteria
         // into the evaluator right away.
         if (screeningCandidateId) {
-          const cand = candidates.find((c) => c.id === screeningCandidateId);
+          const cand = localCandidates.find((c) => c.id === screeningCandidateId);
           if (cand && cand.officeId === selectedOfficeForCriteria) {
             setEvalResults(saved.criteria.map((c) => ({ criterion: c, passed: true })));
           }
@@ -991,7 +1027,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
     e.preventDefault();
     if (!screeningCandidateId || evalResults.length === 0) return;
 
-    const cand = candidates.find(c => c.id === screeningCandidateId);
+    const cand = localCandidates.find(c => c.id === screeningCandidateId);
     if (!cand) return;
 
     try {
@@ -1051,7 +1087,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
 
     try {
       const voter = voters.find(v => v.id === agentVoterId);
-      const cand = candidates.find(c => c.id === agentCandidateId);
+      const cand = localCandidates.find(c => c.id === agentCandidateId);
       if (!voter || !cand) {
         setAgentError('Selected voter or candidate no longer exists. Refresh and try again.');
         return;
@@ -2952,7 +2988,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                   .filter(o => o.title.toLowerCase().includes(officeSearch.toLowerCase()))
                   .map(o => {
                     const fullIndex = offices.findIndex(ox => ox.id === o.id);
-                    const cands = candidates.filter(c => c.officeId === o.id).sort((a, b) => a.order - b.order);
+                    const cands = localCandidates.filter(c => c.officeId === o.id).sort((a, b) => a.order - b.order);
                     return (
                       <div
                         key={o.id}
@@ -3326,7 +3362,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                     onChange={(e) => {
                       const candId = e.target.value;
                       setScreeningCandidateId(candId);
-                      const cand = candidates.find(c => c.id === candId);
+                      const cand = localCandidates.find(c => c.id === candId);
                       if (cand) {
                         const crit = screeningCriteria.find(sc => sc.officeId === cand.officeId);
                         if (crit) {
@@ -3339,7 +3375,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                     className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B]"
                   >
                     <option value="">-- Choose Contestant --</option>
-                    {candidates.map(c => (
+                    {localCandidates.map(c => (
                       <option key={c.id} value={c.id}>
                         {c.name} ({offices.find(o => o.id === c.officeId)?.title})
                       </option>
