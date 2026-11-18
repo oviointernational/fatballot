@@ -64,7 +64,7 @@ const genToken = (): string =>
 
 export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ onNavigate }) => {
   const { user, sessionToken } = useAuth();
-  const { settings, updateSettings, refreshAll, offices, candidates } = useElection();
+  const { settings, updateSettings, refreshAll, offices } = useElection();
 
   const isSuperadmin = user?.role === 'superadmin';
   const isCommissioner = user?.role === 'commissioner';
@@ -270,7 +270,10 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
         supabase.from('screening_criteria').select('*'),
         supabase.from('timeline').select('*').order('"order"'),
         supabase.from('ycec_members').select('*').order('"order"'),
-        supabase.from('candidates').select('*').order('order')
+        // Do not ORDER BY "order" on the server: legacy databases are missing
+        // that column on candidates (42703), which silently empties the
+        // contestant directory, office counts and screening dropdown.
+        supabase.from('candidates').select('*')
       ]);
 
       if (!votersRes.error) setVoters((votersRes.data || []).map(mapVoterRow));
@@ -279,12 +282,15 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
       if (!critRes.error) setScreeningCriteria((critRes.data || []).map(mapScreeningCriteriaRow));
       if (!timeRes.error) setTimelineItems((timeRes.data || []).map(mapTimelineRow));
       if (!candRes.error) {
-        const mapped = ((candRes.data as any[]) || []).map(mapCandidateRow);
+        const mapped = ((candRes.data as any[]) || [])
+          .map(mapCandidateRow)
+          .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
+        // Authoritative list from the database — real IDs, not generated ones.
         setLocalCandidates(mapped);
-        // Candidates are owned by ElectionContext; refresh context so the
-        // dashboard and voter-facing screens see new assignments immediately.
-        void refreshAll();
       }
+      // ElectionContext owns the public candidate list; refresh it so the
+      // dashboard and voter-facing screens see new assignments immediately.
+      void refreshAll();
       const directoryRows = (!ycecRes.error ? (ycecRes.data || []) : []).map(mapYCECRow);
       if (!ycecRes.error) setYcecMembers(directoryRows);
       const officerList = (votersRes.data || []).map(mapVoterRow).filter(v => v.role === 'commissioner');
@@ -872,31 +878,27 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
       const voter = voters.find(v => v.id === voterId);
       if (!voter) { setAssignOfficeError('Voter not found.'); return; }
 
-      // Upsert candidate row: create if new, update office if reassigned
+      // Create or reassign the candidate row in a single idempotent upsert.
+      // Keying on ra_number (which is UNIQUE in the DB) means a leftover row
+      // from an earlier attempt can never break reassignment with a 23505.
+      // Use the existing DB id when present; never invent a throwaway id,
+      // because screening / agents reference candidate.id later.
       const existingCand = localCandidates.find(c => c.raNumber === voter.raNumber);
-      if (existingCand) {
-        const { error: updError } = await supabase
-          .from('candidates')
-          .update({ office_id: officeId })
-          .eq('id', existingCand.id);
-        if (updError) throw updError;
-      } else {
-        const { error: insError } = await supabase.from('candidates').insert({
-          id: `cand-${Date.now()}`,
-          office_id: officeId,
-          voter_id: voterId,
-          name: `${voter.firstName} ${voter.middleName ? voter.middleName + ' ' : ''}${voter.lastName}`,
-          ra_number: voter.raNumber,
-          avatar: voter.avatar || '',
-          tagline: '',
-          vision: '',
-          antecedent: [],
-          current_offices: [],
-          achievements: [],
-          contact_email: voter.email
-        });
-        if (insError) throw insError;
-      }
+      const { error: candError } = await supabase.from('candidates').upsert({
+        id: existingCand?.id || `cand-ra-${voter.raNumber}`,
+        office_id: officeId,
+        voter_id: voterId,
+        name: `${voter.firstName} ${voter.middleName ? voter.middleName + ' ' : ''}${voter.lastName}`,
+        ra_number: voter.raNumber,
+        avatar: voter.avatar || '',
+        tagline: existingCand?.tagline || '',
+        vision: existingCand?.vision || '',
+        antecedent: existingCand?.antecedent || [],
+        current_offices: existingCand?.currentOffices || [],
+        achievements: existingCand?.achievements || [],
+        contact_email: voter.email
+      }, { onConflict: 'ra_number' });
+      if (candError) throw candError;
 
       const res = await supabase
         .from('voters')
@@ -909,36 +911,13 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
         const updated = mapVoterRow(res.data);
         setVoters(prev => prev.map(v => v.id === updated.id ? updated : v));
 
-        // Rebuild local candidate mirror so the office count, contestant
-        // directory and screening dropdown reflect this assignment instantly.
-        const newCand: CandidateProfile = {
-          id: `cand-${Date.now()}`,
-          officeId: officeId,
-          name: `${voter.firstName} ${voter.middleName ? voter.middleName + ' ' : ''}${voter.lastName}`,
-          raNumber: voter.raNumber,
-          avatar: voter.avatar || '',
-          tagline: '',
-          vision: '',
-          antecedent: [],
-          currentOffices: [],
-          achievements: [],
-          contactEmail: voter.email,
-          order: 0
-        };
-        setLocalCandidates(prev => {
-          const existing = prev.findIndex(c => c.raNumber === voter.raNumber);
-          if (existing >= 0) {
-            const next = [...prev];
-            next[existing] = { ...next[existing], officeId: officeId };
-            return next;
-          }
-          return [...prev, newCand];
-        });
-
-        await refreshAll();
+        // Re-read the authoritative rows from the database so the office
+        // count, contestant directory, dashboard and screening dropdown all
+        // use the REAL candidate id (never a generated placeholder).
+        await Promise.all([fetchAllData(), refreshAll()]);
         audit('OFFICE_ASSIGNED', { voterId, officeId, raNumber: voter.raNumber });
         setAssignOfficeError(null);
-        alert(`${voter.firstName} ${voter.lastName} assigned as contestant for ${officeId}.`);
+        alert(`${voter.firstName} ${voter.lastName} assigned as contestant for ${offices.find(o => o.id === officeId)?.title || officeId}.`);
       } else {
         setAssignOfficeError(res.error?.message || 'Assignment failed.');
       }
@@ -950,7 +929,8 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
   const handleUnassignOffice = async (voterId: string) => {
     try {
       // Remove candidate rows for this voter
-      await supabase.from('candidates').delete().eq('voter_id', voterId);
+      const { error: delError } = await supabase.from('candidates').delete().eq('voter_id', voterId);
+      if (delError) throw delError;
 
       const res = await supabase
         .from('voters')
@@ -963,10 +943,12 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
         const updated = mapVoterRow(res.data);
         setVoters(prev => prev.map(v => v.id === updated.id ? updated : v));
         audit('OFFICE_UNASSIGNED', { voterId });
-        refreshAll();
+        await Promise.all([fetchAllData(), refreshAll()]);
+      } else {
+        throw res.error;
       }
-    } catch (err) {
-      console.error(err);
+    } catch (err: any) {
+      setAssignOfficeError(err?.message || 'Could not undo assignment.');
     }
   };
 
@@ -3583,7 +3565,7 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                       className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-gray-50 dark:bg-[#16223B]"
                     >
                       <option value="">-- Choose Candidate --</option>
-                      {candidates
+                      {localCandidates
                         .filter(c => !agentOfficeId || c.officeId === agentOfficeId)
                         .map(c => (
                           <option key={c.id} value={c.id}>{c.name}</option>

@@ -60,12 +60,21 @@ export const ElectionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const [setRes, offRes, candRes] = await Promise.all([
         supabase.from('settings').select('data').eq('id', 1).maybeSingle(),
         supabase.from('offices').select('*').order('order'),
-        supabase.from('candidates').select('*').order('order')
+        // IMPORTANT: never ORDER BY "order" on candidates here. Older installs
+        // created this table without that column, so PostgREST rejects the
+        // whole request with 42703 "column candidates.order does not exist"
+        // and EVERY contestant screen (dashboard, ballot, screening) goes
+        // empty even though rows exist. Sort the mapped rows in JS instead.
+        supabase.from('candidates').select('*')
       ]);
 
       if (setRes.data) setSettings(mapSettings(setRes.data.data));
       if (offRes.data) setOffices(offRes.data.map(mapOfficeRow));
-      if (candRes.data) setCandidates(candRes.data.map(mapCandidateRow));
+      if (candRes.data) {
+        const mapped = candRes.data.map(mapCandidateRow);
+        mapped.sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
+        setCandidates(mapped);
+      }
       const s = await fetchSystemStats();
       if (s) setStats(s);
     } catch (err) {

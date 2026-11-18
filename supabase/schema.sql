@@ -462,6 +462,27 @@ create table if not exists public.candidates (
   "order"         integer not null default 0
 );
 
+-- SELF-HEAL: older installs created candidates WITHOUT the "order" column.
+-- Because `create table if not exists` does not alter an existing table, any
+-- query that does ORDER BY "order" fails with 42703 and silently empties the
+-- contestant list on the dashboard, ballot and screening screens. Add it here
+-- so re-running this schema repairs those databases.
+alter table public.candidates add column if not exists "order" integer not null default 0;
+
+-- Make contestant assignment appear instantly on every screen without a reload.
+do $$
+begin
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime')
+     and not exists (
+       select 1 from pg_publication_tables
+       where pubname = 'supabase_realtime'
+         and schemaname = 'public'
+         and tablename = 'candidates'
+     ) then
+    alter publication supabase_realtime add table public.candidates;
+  end if;
+end $$;
+
 -- --------------------------------------------------------------------------
 -- VOTES (ballot box; starts empty; one row per voter per office)
 -- --------------------------------------------------------------------------
