@@ -79,18 +79,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
-  /** Appends an audit-ladder event attributed to a voter. */
-  const auditSelf = useCallback(async (eventType: string, details: Record<string, unknown> = {}, actorOverride?: Voter): Promise<void> => {
+  /** Appends an audit-ladder event attributed to a voter.
+   *  Returns the database error text (or null) so silent ledger failures
+   *  can be surfaced to the user instead of vanishing into the console. */
+  const auditSelf = useCallback(async (eventType: string, details: Record<string, unknown> = {}, actorOverride?: Voter): Promise<string | null> => {
     const actor = actorOverride || user;
-    if (!actor) return;
+    if (!actor) return 'No signed-in voter to attribute the event to.';
     try {
-      await supabase.rpc('append_audit', {
+      const { error } = await supabase.rpc('append_audit', {
         p_event_type: eventType,
         p_actor: { id: actor.id, raNumber: actor.raNumber, name: actor.name, email: actor.email, role: actor.role },
         p_details: { raNumber: actor.raNumber, ...details }
       });
-    } catch (e) {
+      if (error) {
+        console.error(`Audit append failed (${eventType})`, error);
+        return error.message || 'Unknown database error.';
+      }
+      return null;
+    } catch (e: any) {
       console.error(`Audit append failed (${eventType})`, e);
+      return e.message || 'Network error.';
     }
   }, [user]);
 
@@ -173,7 +181,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       setUser(profile);
       setSessionToken(data.session.access_token);
-      await auditSelf('AUTH_LOGIN_SUCCESS', { method: 'password' }, profile);
+      const auditError = await auditSelf('AUTH_LOGIN_SUCCESS', { method: 'password' }, profile);
+      if (auditError) {
+        return { success: true, message: `Signed in, but activity logging failed: ${auditError} — screenshot this for the administrator.` };
+      }
       return { success: true, message: 'Signed in successfully.' };
     } catch (err: any) {
       return { success: false, message: err.message || 'Network error occurred.' };

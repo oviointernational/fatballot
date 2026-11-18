@@ -70,15 +70,24 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
   const isCommissioner = user?.role === 'commissioner';
   const canAccessAdmin = isSuperadmin || isCommissioner;
 
-  const audit = async (eventType: string, details: Record<string, any>): Promise<void> => {
-    const { error } = await supabase.rpc('append_audit', {
-      p_event_type: eventType,
-      p_actor: user
-        ? { id: user.id, raNumber: user.raNumber, name: user.name, email: user.email, role: user.role }
-        : {},
-      p_details: details
-    });
-    if (error) console.error('Audit append failed', error);
+  const audit = async (eventType: string, details: Record<string, any>): Promise<string | null> => {
+    try {
+      const { error } = await supabase.rpc('append_audit', {
+        p_event_type: eventType,
+        p_actor: user
+          ? { id: user.id, raNumber: user.raNumber, name: user.name, email: user.email, role: user.role }
+          : {},
+        p_details: details
+      });
+      if (error) {
+        console.error('Audit append failed', error);
+        return error.message || 'Unknown database error.';
+      }
+      return null;
+    } catch (err: any) {
+      console.error('Audit append failed', err);
+      return err.message || 'Network error.';
+    }
   };
 
   const [activeTab, setActiveTab] = useState<AdminTab>(() => isSuperadmin ? 'access' : 'users');
@@ -721,12 +730,12 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
 
       if (!error) {
         setVoters(prev => prev);
-        audit('VOTER_REGISTERED', {
+        const auditError = await audit('VOTER_REGISTERED', {
           raNumber: String(raNum),
           email: regEmail.trim().toLowerCase(),
           requestedRole: regRole
         });
-        alert(`RA-${raNum} enrolled${fullName ? ` (${fullName})` : ''}. They can sign in now with RA-${raNum} and the password you just set. They can complete the rest of their profile later from Profile.`);
+        alert(`RA-${raNum} enrolled${fullName ? ` (${fullName})` : ''}. They can sign in now with RA-${raNum} and the password you just set. They can complete the rest of their profile later from Profile.${auditError ? ` WARNING: activity logging failed (${auditError}) — screenshot this for the administrator.` : ''}`);
         setShowCreateUserModal(false);
         setRegFirstName('');
         setRegMiddleName('');
@@ -777,6 +786,55 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
       }
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  // Edit Office (title, description, icon)
+  const [editingOfficeId, setEditingOfficeId] = useState<string | null>(null);
+  const [editOfficeTitle, setEditOfficeTitle] = useState('');
+  const [editOfficeDesc, setEditOfficeDesc] = useState('');
+  const [editOfficeIcon, setEditOfficeIcon] = useState('Crown');
+  const [savingOfficeEdit, setSavingOfficeEdit] = useState(false);
+
+  const startEditingOffice = (office: Office) => {
+    setEditingOfficeId(office.id);
+    setEditOfficeTitle(office.title);
+    setEditOfficeDesc(office.description || '');
+    setEditOfficeIcon(office.icon || 'Crown');
+  };
+
+  const cancelEditingOffice = () => {
+    setEditingOfficeId(null);
+    setEditOfficeTitle('');
+    setEditOfficeDesc('');
+    setEditOfficeIcon('Crown');
+  };
+
+  const handleUpdateOffice = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingOfficeId || !editOfficeTitle.trim()) return;
+    setSavingOfficeEdit(true);
+    try {
+      const { error } = await supabase
+        .from('offices')
+        .update({
+          title: editOfficeTitle.trim(),
+          description: editOfficeDesc.trim() || 'Executive Contested Office',
+          icon: editOfficeIcon
+        })
+        .eq('id', editingOfficeId);
+      if (!error) {
+        audit('OFFICE_UPDATED', { officeId: editingOfficeId, officeTitle: editOfficeTitle.trim() });
+        cancelEditingOffice();
+        refreshAll();
+      } else {
+        alert(error.message || 'Failed to update office.');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Network error updating office.');
+    } finally {
+      setSavingOfficeEdit(false);
     }
   };
 
@@ -893,8 +951,18 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
           const filtered = prev.filter(sc => sc.officeId !== selectedOfficeForCriteria);
           return [...filtered, saved];
         });
+        // Make the saved criteria available to screen contestants instantly.
+        // If a contestant of this office is already chosen, load the criteria
+        // into the evaluator right away.
+        if (screeningCandidateId) {
+          const cand = candidates.find((c) => c.id === screeningCandidateId);
+          if (cand && cand.officeId === selectedOfficeForCriteria) {
+            setEvalResults(saved.criteria.map((c) => ({ criterion: c, passed: true })));
+          }
+        }
         audit('SCREENING_CRITERIA_UPDATED', { officeId: selectedOfficeForCriteria, title: criteriaTitle });
         alert('Screening criteria saved successfully!');
+        fetchAllData();
       } else {
         alert(res.error?.message || 'Failed to save screening criteria.');
       }
@@ -2889,6 +2957,58 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                         }`}
                         title="Drag to reorder position"
                       >
+                        {editingOfficeId === o.id ? (
+                          <form onSubmit={handleUpdateOffice} className="space-y-2 text-xs">
+                            <div>
+                              <label className="block font-semibold mb-1">Office Title *</label>
+                              <input
+                                type="text"
+                                required
+                                autoFocus
+                                value={editOfficeTitle}
+                                onChange={(e) => setEditOfficeTitle(e.target.value)}
+                                className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-white dark:bg-[#0F172A] outline-none"
+                              />
+                            </div>
+                            <div>
+                              <label className="block font-semibold mb-1">Scope of Authority</label>
+                              <textarea
+                                rows={2}
+                                value={editOfficeDesc}
+                                onChange={(e) => setEditOfficeDesc(e.target.value)}
+                                className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-white dark:bg-[#0F172A] outline-none"
+                              />
+                            </div>
+                            <div>
+                              <label className="block font-semibold mb-1">Icon</label>
+                              <select
+                                value={editOfficeIcon}
+                                onChange={(e) => setEditOfficeIcon(e.target.value)}
+                                className="w-full px-3 py-2 rounded-xl border border-gray-300 dark:border-[#1E2E4E] bg-white dark:bg-[#0F172A] outline-none"
+                              >
+                                {['Crown', 'Shield', 'FileText', 'Coins', 'Sparkles', 'Megaphone'].map(icon => (
+                                  <option key={icon} value={icon}>{icon}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="flex items-center justify-end space-x-2 pt-1">
+                              <button
+                                type="button"
+                                onClick={cancelEditingOffice}
+                                className="px-3 py-1.5 border rounded-xl font-semibold text-gray-600 dark:text-slate-300"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="submit"
+                                disabled={savingOfficeEdit}
+                                className="px-4 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white font-bold rounded-xl"
+                              >
+                                {savingOfficeEdit ? 'Saving...' : 'Save'}
+                              </button>
+                            </div>
+                          </form>
+                        ) : (
                         <div className="flex items-start justify-between">
                           <div className="flex items-start space-x-2 min-w-0">
                             <GripVertical className="w-4 h-4 text-gray-300 dark:text-slate-600 mt-0.5 shrink-0" />
@@ -2897,14 +3017,24 @@ export const AdminPage: React.FC<{ onNavigate: (page: string) => void }> = ({ on
                               <p className="text-[11px] text-gray-500 line-clamp-2 mt-0.5">{o.description}</p>
                             </div>
                           </div>
-                          <button
-                            onClick={() => handleDeleteOffice(o.id)}
-                            className="text-gray-400 hover:text-red-600 p-1"
-                            title="Delete Office"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          <div className="flex items-center shrink-0">
+                            <button
+                              onClick={() => startEditingOffice(o)}
+                              className="text-gray-400 hover:text-purple-600 p-1"
+                              title="Edit Office"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteOffice(o.id)}
+                              className="text-gray-400 hover:text-red-600 p-1"
+                              title="Delete Office"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </div>
+                        )}
 
                         {/* Contestants — drag to rearrange ballot order */}
                         {cands.length > 0 && (

@@ -60,6 +60,8 @@ function formatEventTitle(block: AuditBlock): string {
       return "Governance: Status → Settings Updated";
     case "OFFICE_CREATED":
       return "Office: Status → Created";
+    case "OFFICE_UPDATED":
+      return "Office: Status → Updated";
     case "OFFICE_DELETED":
       return "Office: Status → Removed";
     case "COMMISSIONERS_APPOINTED":

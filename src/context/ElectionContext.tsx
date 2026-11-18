@@ -135,6 +135,71 @@ export const ElectionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     };
   }, [fetchLive]);
 
+  // Realtime channels:
+  //   * votes INSERT/UPDATE  -> refresh live tallies + the voter's own ballot
+  //   * candidates INSERT/UPDATE/DELETE -> refresh the contestant directory
+  // These make vote casting and contestant assignment appear instantly on
+  // every screen, on top of the 4-second polling fallback.
+  useEffect(() => {
+    if (!supabase) return;
+
+    const handleVoteChange = () => {
+      void fetchLive();
+    };
+
+    const voteChannel = supabase
+      .channel('fb-realtime-votes')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'votes' },
+        handleVoteChange
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'votes' },
+        (payload) => {
+          void fetchLive();
+          if (user?.raNumber) {
+            const ra = String((payload as any).new?.voter_ra_number ?? '');
+            if (ra === user.raNumber) void fetchMyVotes();
+          }
+        }
+      )
+      .subscribe();
+
+    const candidateChannel = supabase
+      .channel('fb-realtime-candidates')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'candidates' },
+        () => void fetchPublicData()
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'candidates' },
+        () => void fetchPublicData()
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'candidates' },
+        () => void fetchPublicData()
+      )
+      .subscribe();
+
+    return () => {
+      try {
+        supabase.removeChannel(voteChannel);
+      } catch {
+        /* ignore */
+      }
+      try {
+        supabase.removeChannel(candidateChannel);
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [supabase, fetchLive, fetchPublicData, fetchMyVotes, user?.raNumber]);
+
   // Compute election status
   const noElection = settings.electionMode === 'none';
   const now = new Date().getTime();
@@ -195,6 +260,10 @@ export const ElectionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
         return { success: false, message: 'Failed to submit vote: ' + msg };
       }
+
+      // Broadcast the ballot immediately so every live tally updates in real
+      // time (in addition to the 4-second polling fallback below).
+      void fetchLive();
 
       const row = { id: 'local', voter_ra_number: parseInt(user.raNumber, 10), office_id: officeId, choice, candidate_id: candidateValue, timestamp: new Date().toISOString() };
       const mapped = mapCastVote(row);

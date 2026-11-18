@@ -996,31 +996,51 @@ revoke insert, update, delete on public.audit_log from anon, authenticated;
 -- --------------------------------------------------------------------------
 -- SEED: the ONE Superadmin (NO demo candidates/votes/voters)
 -- --------------------------------------------------------------------------
-insert into auth.users (
-  instance_id, id, aud, role, email,
-  encrypted_password, email_confirmed_at,
-  raw_app_meta_data, raw_user_meta_data,
-  created_at, updated_at,
-  confirmation_token, recovery_token,
-  email_change, email_change_token_new, email_change_token_current
-) values (
-  '00000000-0000-0000-0000-000000000000',
-  gen_random_uuid(),
-  'authenticated', 'authenticated',
-  'ernestoviosun@gmail.com',
-  crypt('Ovi#Super26406', gen_salt('bf')),
-  now(),
-  '{"provider":"email","providers":["email"]}',
-  '{}',
-  now(), now(), '', '', '', '', ''
-)
-on conflict do nothing;
+-- Guarantee ernestoviosun@gmail.com holds the Superadmin role (idempotent;
+-- safe to re-run). Run this in the Supabase SQL Editor: it runs as the
+-- database superuser, so it bypasses RLS and the protect_voter_identity
+-- guard while the trigger is temporarily disabled.
+alter table public.voters disable trigger protect_voter_identity;
+update public.voters
+set role = 'superadmin', is_active = true, is_accredited = true
+where lower(email) = 'ernestoviosun@gmail.com';
+alter table public.voters enable trigger protect_voter_identity;
 
-insert into public.voters (id, auth_uid, ra_number, email, first_name, middle_name, last_name, role, is_accredited, department, phone, registered_at)
-select 'vot-superadmin', u.id, 26406, u.email, 'Ernest', 'Ovi', 'Sun', 'superadmin', true, 'Electoral Commission Directorate', '+234 801 000 2640', '2026-08-01T08:00:00.000Z'
-from auth.users u
-where u.email = 'ernestoviosun@gmail.com'
-on conflict (id) do nothing;
+do $$
+begin
+  insert into auth.users (
+    instance_id, id, aud, role, email,
+    encrypted_password, email_confirmed_at,
+    raw_app_meta_data, raw_user_meta_data,
+    created_at, updated_at,
+    confirmation_token, recovery_token,
+    email_change, email_change_token_new, email_change_token_current
+  ) values (
+    '00000000-0000-0000-0000-000000000000',
+    gen_random_uuid(),
+    'authenticated', 'authenticated',
+    'ernestoviosun@gmail.com',
+    crypt('Ovi#Super26406', gen_salt('bf')),
+    now(),
+    '{"provider":"email","providers":["email"]}',
+    '{}',
+    now(), now(), '', '', '', '', ''
+  )
+  on conflict do nothing;
+exception when unique_violation then
+  raise notice 'Superadmin auth user for ernestoviosun@gmail.com already exists.';
+end $$;
+
+do $$
+begin
+  insert into public.voters (id, auth_uid, ra_number, email, first_name, middle_name, last_name, role, is_accredited, department, phone, registered_at)
+  select 'vot-superadmin', u.id, 26406, u.email, 'Ernest', 'Ovi', 'Sun', 'superadmin', true, 'Electoral Commission Directorate', '+234 801 000 2640', '2026-08-01T08:00:00.000Z'
+  from auth.users u
+  where u.email = 'ernestoviosun@gmail.com'
+  on conflict (id) do nothing;
+exception when unique_violation then
+  raise notice 'Superadmin voter record for ernestoviosun@gmail.com already exists.';
+end $$;
 
 insert into public.audit_log (timestamp, event_type, actor, details, previous_hash, hash)
 select to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), 'GENESIS_BLOCK',

@@ -77,6 +77,7 @@ export const LogPage: React.FC<{ onNavigate: (page: string) => void }> = ({ onNa
   const isAgent = user?.isAgent === true;
 
   const [logs, setLogs] = useState<AuditBlock[]>([]);
+  const [logsError, setLogsError] = useState<string | null>(null);
   const [verification, setVerification] = useState<{ valid: boolean; totalBlocks: number; error?: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -87,28 +88,68 @@ export const LogPage: React.FC<{ onNavigate: (page: string) => void }> = ({ onNa
   const [agentLogs, setAgentLogs] = useState<AuditBlock[]>([]);
   const [agentLoading, setAgentLoading] = useState(false);
 
+  // Ledger with fallbacks so a failure is NEVER silent: the exact database
+  // error is always surfaced in the UI instead of an empty list.
   const fetchLogs = async () => {
     setLoading(true);
+    setLogsError(null);
     try {
       const canViewAll =
         (user?.role === 'commissioner' || user?.role === 'superadmin') ||
         settings.publicAuditLog;
 
-      const [logsRes, verifyRes] = await Promise.all([
-        canViewAll
-          ? supabase.from('audit_log').select('*').order('id', { ascending: false })
-          : supabase.from('my_audit').select('*'),
-        supabase.rpc('verify_audit_chain')
-      ]);
+      let rows: any[] | null = null;
+      let lastErr = '';
+      if (canViewAll) {
+        const r = await supabase.from('audit_log').select('*').order('id', { ascending: false });
+        if (!r.error) rows = r.data || [];
+        else lastErr = `audit_log read: ${r.error.message}. `;
+      } else {
+        const r = await supabase.from('my_audit').select('*');
+        if (!r.error) rows = r.data || [];
+        else lastErr = `my_audit read: ${r.error.message}. `;
+      }
+      if (rows === null) {
+        const rpc = await supabase.rpc('my_audit_logs');
+        if (!rpc.error) {
+          rows = rpc.data || [];
+          lastErr += '(RPC fallback used.)';
+        } else {
+          lastErr += `RPC fallback: ${rpc.error.message}. `;
+          const other = canViewAll
+            ? await supabase.from('my_audit').select('*')
+            : await supabase.from('audit_log').select('*').order('id', { ascending: false });
+          if (!other.error) {
+            rows = other.data || [];
+            lastErr += '(second fallback used.)';
+          } else {
+            lastErr += `Second fallback: ${other.error.message}.`;
+          }
+        }
+      }
 
-      if (logsRes.error) console.error(logsRes.error);
-      else setLogs((logsRes.data || []).map((row: any, i: number) => mapAuditRow(row, i)));
+      if (rows !== null) {
+        setLogs(rows.map((row: any, i: number) => mapAuditRow(row, i)));
+        setLogsError(
+          lastErr.includes('fallback used')
+            ? `Notice: primary ledger read failed (${lastErr}) — showing fallback data. If the schema was updated, re-run supabase/schema.sql, then press Refresh.`
+            : null
+        );
+      } else {
+        setLogs([]);
+        setLogsError(
+          `Ledger unavailable: ${lastErr} If the schema was updated, re-run supabase/schema.sql (it is idempotent), then press Refresh.`
+        );
+      }
+
+      const verifyRes = await supabase.rpc('verify_audit_chain');
       if (!verifyRes.error) setVerification({
         valid: Boolean(verifyRes.data),
-        totalBlocks: logsRes.data?.length || 0
+        totalBlocks: rows?.length || 0
       });
-    } catch (e) {
-      console.error("Failed to load audit ledger", e);
+    } catch (e: any) {
+      setLogs([]);
+      setLogsError('Ledger unavailable: ' + (e.message || 'Network error.'));
     } finally {
       setLoading(false);
     }
@@ -265,6 +306,12 @@ export const LogPage: React.FC<{ onNavigate: (page: string) => void }> = ({ onNa
           </select>
         </div>
       </div>
+
+      {logsError && (
+        <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/40 text-amber-800 dark:text-amber-300 text-xs space-y-1">
+          <p className="font-semibold">{logsError}</p>
+        </div>
+      )}
 
       {/* Main Activity Log Container - Styled exactly as the reference image */}
       <div className="bg-white dark:bg-[#0F172A] border border-gray-200 dark:border-[#1E2E4E] rounded-3xl shadow-sm overflow-hidden">
