@@ -1042,6 +1042,23 @@ exception when unique_violation then
   raise notice 'Superadmin voter record for ernestoviosun@gmail.com already exists.';
 end $$;
 
+-- Superadmin also serves as YCEC Chairman directory entry (idempotent).
+-- He remains a superadmin in public.voters; this only adds/refreshes his
+-- YCEC Commissioners Directory row so he appears as Chairman.
+do $$
+begin
+  if not exists (select 1 from public.ycec_members where id = 'ycec-vot-superadmin') then
+    insert into public.ycec_members (id, name, role, email, phone, avatar, tenure, "order")
+    values ('ycec-vot-superadmin', 'Ernest Oviosun', 'Chairman', 'ernestoviosun@gmail.com', '07067137400', '', '2026',
+            coalesce((select max("order") from public.ycec_members), 0) + 1);
+  else
+    update public.ycec_members
+    set name = 'Ernest Oviosun', role = 'Chairman', email = 'ernestoviosun@gmail.com',
+        phone = '07067137400', tenure = '2026'
+    where id = 'ycec-vot-superadmin';
+  end if;
+end $$;
+
 insert into public.audit_log (timestamp, event_type, actor, details, previous_hash, hash)
 select to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), 'GENESIS_BLOCK',
        '{"role":"system"}'::jsonb,

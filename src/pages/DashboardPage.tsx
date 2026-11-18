@@ -105,7 +105,7 @@ export const DashboardPage: React.FC<{ onNavigate: (page: string) => void }> = (
     directoryByVoterId[m.id.startsWith('ycec-') ? m.id.slice(5) : m.id] = m;
   });
   const commissionerDirectory: YCECMember[] = votersList
-    .filter(v => v.role === 'commissioner')
+    .filter(v => v.role === 'commissioner' || v.role === 'superadmin')
     .map((v, i) => {
       const dir = directoryByVoterId[v.id];
       const fullName = `${v.firstName}${v.middleName ? ' ' + v.middleName : ''} ${v.lastName}`.replace(/\s+/g, ' ').trim() || `RA-${v.raNumber}`;
