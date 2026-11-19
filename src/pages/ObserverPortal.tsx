@@ -11,7 +11,8 @@ import {
   CheckCircle2,
   XCircle,
   RefreshCw,
-  Lock
+  Lock,
+  UserRound
 } from "lucide-react";
 import { OfficeLiveResult, SystemStats, TimelineItem } from "../types";
 import { supabase } from "../lib/supabase";
@@ -39,17 +40,55 @@ export const ObserverPortal: React.FC<ObserverPortalProps> = ({ token }) => {
   const [timeline, setTimeline] = useState<TimelineItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [siteName, setSiteName] = useState<string>("FatBallot");
+
+  // The observer portal sits outside ElectionProvider, so read the configured
+  // site name straight from the public settings row used everywhere else.
+  useEffect(() => {
+    let cancelled = false;
+    const loadSiteName = async () => {
+      try {
+        const { data } = await supabase
+          .from('settings')
+          .select('data')
+          .eq('id', 1)
+          .maybeSingle();
+        const configured = (data?.data as any)?.siteName;
+        if (!cancelled && typeof configured === 'string' && configured.trim()) {
+          setSiteName(configured.trim());
+        }
+      } catch {
+        // Keep the default name if settings cannot be read.
+      }
+    };
+    loadSiteName();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    const previousTitle = document.title;
+    document.title = `${siteName} — Observer Portal`;
+    return () => { document.title = previousTitle; };
+  }, [siteName]);
 
   // Verify token and get observer info
   useEffect(() => {
     const verify = async () => {
       try {
         const { data, error } = await supabase.rpc('verify_observer', { p_token: token });
-        if (error || !data) {
+        // verify_observer returns a TABLE, so PostgREST hands back an array.
+        // Accept a single object too in case the RPC is later changed to RETURN one.
+        const row = Array.isArray(data) ? data[0] : data;
+        if (error || !row || !row.name) {
           setError("Invalid or expired observer link.");
           setVerified(false);
         } else {
-          setObserverInfo(data);
+          setObserverInfo({
+            id: row.id,
+            name: row.name,
+            rank: row.rank || '',
+            office: row.office || '',
+          });
           setVerified(true);
         }
       } catch {
@@ -134,11 +173,22 @@ const fetchData = async () => {
             <Eye className="w-4 h-4 text-white" />
           </div>
           <div>
-            <p className="text-sm font-bold text-gray-900 dark:text-white">FatBallot — Observer Portal</p>
+            <p className="text-sm font-bold text-gray-900 dark:text-white">{siteName} — Observer Portal</p>
             <p className="text-xs text-gray-500 dark:text-slate-400">Read-only view · No actions permitted</p>
           </div>
         </div>
         <div className="flex items-center space-x-4">
+          {observerInfo && (
+            <div className="hidden sm:flex items-center space-x-2 px-3 py-1.5 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/60">
+              <UserRound className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+              <div className="leading-tight">
+                <p className="text-xs font-bold text-blue-900 dark:text-blue-200">{observerInfo.name}</p>
+                <p className="text-[10px] text-blue-700 dark:text-blue-400">
+                  {observerInfo.rank}{observerInfo.office ? ` · ${observerInfo.office}` : ""}
+                </p>
+              </div>
+            </div>
+          )}
           {lastUpdated && (
             <span className="text-xs text-gray-400 dark:text-slate-500">
               Last updated: {lastUpdated.toLocaleTimeString()}
